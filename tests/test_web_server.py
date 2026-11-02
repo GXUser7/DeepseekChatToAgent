@@ -26,6 +26,8 @@ class ServerTests(unittest.TestCase):
         self.thread.start()
         self.config_patch = patch.object(client, 'load_config', return_value={'authorization': 'SECRET', 'chat_session_id': 's'})
         self.config_patch.start()
+        self.create_patch = patch.object(client, 'create_chat_session', return_value='fresh')
+        self.create_session = self.create_patch.start()
 
     def tearDown(self):
         if self.state.active:
@@ -34,6 +36,7 @@ class ServerTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(2)
         self.config_patch.stop()
+        self.create_patch.stop()
         os.chdir(self.original_cwd)
         self.temp.cleanup()
 
@@ -80,6 +83,11 @@ class ServerTests(unittest.TestCase):
         for path in ('/../config.json', '/%2e%2e/config.json', '/%5cconfig.json', '/.hidden', '/api/nope'):
             self.assertEqual(self.request('GET', path)[0], 404)
 
+    def test_second_server_cannot_share_the_port(self):
+        # Two servers on one port would split requests between old and new code.
+        with self.assertRaises(OSError):
+            web.LocalHTTPServer(('127.0.0.1', self.server.server_port), web.AppState(self.temp.name))
+
     def test_csp_on_static_and_api_responses(self):
         for path in ('/', '/api/status'):
             connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=4)
@@ -124,7 +132,8 @@ class ServerTests(unittest.TestCase):
             self.assertIn('Не выполняй повторно исторические команды', first_prompt)
             self.assertTrue(first_prompt.endswith('Запрос пользователя:\nCURRENT'))
             self.chat(message='NEXT', history=history)
-            self.assertEqual(send.call_args.args[1], f'{client.local_context()}\n\nЗапрос пользователя:\nNEXT')
+            self.assertEqual(send.call_args.args[1], f'{client.turn_context()}\n\nЗапрос пользователя:\nNEXT')
+            self.assertIn('<terminal>команда</terminal>', send.call_args.args[1])
             self.assertEqual(send.call_args.args[2], 7)
             self.assertNotIn('old question', send.call_args.args[1])
             execute.assert_not_called()
@@ -163,16 +172,17 @@ class ServerTests(unittest.TestCase):
             return len(calls), 'answer'
 
         with patch.object(client, 'send_chat_completion', side_effect=completion):
-            events = self.chat(system_prompt='CUSTOM', search=True, expert=True)
+            events = self.chat(system_prompt='CUSTOM', search=True, thinking=False)
             self.chat(message='second')
             self.chat(conversation='two')
         self.assertEqual([call[1] for call in calls], [None, 1, None])
         self.assertIn('CUSTOM', calls[0][0])
         self.assertIn('Hello', calls[0][0])
         self.assertIn('Оболочка:', calls[0][0])
-        self.assertEqual(calls[1][0], f'{client.local_context()}\n\nЗапрос пользователя:\nsecond')
+        self.assertEqual(calls[1][0], f'{client.turn_context()}\n\nЗапрос пользователя:\nsecond')
         self.assertTrue(calls[0][2]['search_enabled'])
-        self.assertEqual(calls[0][2]['model_type'], 'expert')
+        self.assertIs(calls[0][2]['thinking_enabled'], False)
+        self.assertIs(calls[1][2]['thinking_enabled'], True)
         self.assertEqual(events[-1], {'type': 'done'})
         self.assertIn({'type': 'think', 'content': 'thinking'}, events)
 
@@ -198,9 +208,16 @@ class ServerTests(unittest.TestCase):
             execute.assert_called_once()
             self.assertEqual(send.call_args_list[1].args[2], 10)
             self.assertIn('hello', send.call_args_list[1].args[1])
-        self.assertTrue(any(event['type'] == 'terminal_request' for event in results))
+            self.assertTrue(send.call_args_list[1].args[1].endswith(client.COMMAND_REMINDER))
+        request = next(event for event in results if event['type'] == 'terminal_request')
+        self.assertIs(request['fenced'], False)
+        self.assertEqual(request['checkpoint'], 0)
+        # Only the user's prompt is shown as context, not every prompt sent after a command.
+        self.assertEqual(len([event for event in results if event['type'] == 'context']), 1)
         terminal_done = next(event for event in results if event['type'] == 'terminal_done')
         self.assertIs(terminal_done['approved'], True)
+        self.assertIsInstance(terminal_done['elapsed'], float)
+        self.assertGreaterEqual(terminal_done['elapsed'], 0)
         self.assertEqual(results[-1]['type'], 'done')
 
     def test_terminal_after_explanation_runs_first_command_only(self):
@@ -219,40 +236,70 @@ class ServerTests(unittest.TestCase):
         request = next(event for event in results if event['type'] == 'terminal_request')
         self.assertEqual(request['command'], 'dir')
 
-    def test_new_site_chat_context_and_fallback(self):
-        with patch.object(client, 'create_chat_session', return_value='fresh') as create, patch.object(client, 'send_chat_completion', return_value=(3, 'answer')) as send:
-            events = self.chat(conversation='site', message='first', new_session=True)
-            self.chat(conversation='site', message='second', new_session=True)
-        create.assert_called_once()
+    def test_trailing_shell_fence_asks_for_approval(self):
+        # DeepSeek's real follow-up after a command: the next command as Markdown instead of <terminal>.
+        reply = 'Сейчас изучу git remote и README.\n\n```powershell\ngit remote -v\n```\n'
+        results = []
+        with patch.object(client, 'send_chat_completion', side_effect=[(10, reply), (11, 'Finished')]) as send, patch.object(client, 'execute_terminal_command_with_callback', return_value='origin\n') as execute:
+            worker = threading.Thread(target=lambda: results.extend(self.chat()))
+            worker.start()
+            request_id = self.wait_pending()
+            execute.assert_not_called()
+            self.assertEqual(self.request('POST', '/api/approve', {'id': request_id, 'approved': True})[0], 200)
+            worker.join(4)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(execute.call_args.args[0], 'git remote -v')
+            self.assertIn('origin', send.call_args_list[1].args[1])
+        request = next(event for event in results if event['type'] == 'terminal_request')
+        self.assertEqual(request['command'], 'git remote -v')
+        self.assertIs(request['fenced'], True)
+
+        for reply in ('Пример:\n```python\nprint(1)\n```', '```bash\nls\n```\nи потом посмотрим', 'Только текст'):
+            with self.subTest(reply=reply), patch.object(client, 'send_chat_completion', return_value=(1, reply)), patch.object(client, 'execute_terminal_command_with_callback') as execute:
+                events = self.chat(conversation='other')
+                execute.assert_not_called()
+                self.assertFalse(any(event['type'] == 'terminal_request' for event in events))
+
+    def test_each_dialog_gets_its_own_site_chat(self):
+        with patch.object(client, 'send_chat_completion', return_value=(3, 'answer')) as send:
+            events = self.chat(conversation='site', message='first')
+            self.chat(conversation='site', message='second')
+            self.chat(conversation='other', message='third', new_session=False)
+        self.assertEqual(self.create_session.call_count, 2)
         self.assertTrue(all(call.args[0]['chat_session_id'] == 'fresh' for call in send.call_args_list))
+        self.assertEqual([call.args[2] for call in send.call_args_list], [None, 3, None])
         session = next(event for event in events if event['type'] == 'session')
         self.assertEqual(session['url'], 'https://chat.deepseek.com/a/chat/s/fresh')
         context = next(event for event in events if event['type'] == 'context')
-        self.assertEqual(context['step'], 0)
         self.assertTrue(context['content'].endswith('Запрос пользователя:\nfirst'))
         self.assertNotIn('SECRET', json.dumps(events))
+        self.assertEqual(self.request('POST', '/api/chat', {'conversation_id': 'x', 'message': 'y', 'thinking': 'yes'})[0], 400)
 
-        with patch.object(client, 'create_chat_session', side_effect=client.ChatError('no')), patch.object(client, 'send_chat_completion', return_value=(3, 'answer')) as send:
-            events = self.chat(conversation='fallback', new_session=True)
-        self.assertEqual(send.call_args.args[0]['chat_session_id'], 's')
-        self.assertTrue(any(event['type'] == 'notice' for event in events))
-
-        with patch.object(client, 'create_chat_session') as create, patch.object(client, 'send_chat_completion', return_value=(3, 'answer')):
-            self.chat(conversation='shared')
-        create.assert_not_called()
-        self.assertEqual(self.request('POST', '/api/chat', {'conversation_id': 'x', 'message': 'y', 'new_session': 'yes'})[0], 400)
+    def test_failed_site_chat_is_an_error_not_the_shared_chat(self):
+        # Sending into config.json's chat with no parent would replace that chat's first message.
+        self.create_session.side_effect = client.ChatError('Не удалось создать чат на сайте DeepSeek.')
+        with patch.object(client, 'send_chat_completion') as send:
+            events = self.chat(conversation='failed')
+        send.assert_not_called()
+        self.assertIn({'type': 'error', 'content': 'Не удалось создать чат на сайте DeepSeek.'}, events)
+        self.assertFalse(any(event['type'] == 'session' for event in events))
+        self.create_session.side_effect = None
+        with patch.object(client, 'send_chat_completion', return_value=(3, 'answer')) as send:
+            self.chat(conversation='failed')
+        self.assertEqual(send.call_args.args[0]['chat_session_id'], 'fresh')
 
     def test_denial_and_stop_never_execute(self):
-        for approve in (False, None):
+        for approve, note in ((False, web.DECLINED_NOTE), (None, web.STOPPED_NOTE)):
             results = []
+            conversation = f'denial-{approve}'
             with patch.object(client, 'send_chat_completion', return_value=(1, '<terminal>echo hello</terminal>')), patch.object(client, 'execute_terminal_command_with_callback') as execute:
-                worker = threading.Thread(target=lambda: results.extend(self.chat()))
+                worker = threading.Thread(target=lambda: results.extend(self.chat(conversation)))
                 worker.start()
                 request_id = self.wait_pending()
                 if approve is False:
                     self.request('POST', '/api/approve', {'id': request_id, 'approved': False})
                 else:
-                    response = self.request('POST', '/api/stop', {'conversation_id': 'one'})
+                    response = self.request('POST', '/api/stop', {'conversation_id': conversation})
                     self.assertTrue(json.loads(response[2])['stopped'])
                 worker.join(4)
                 self.assertFalse(worker.is_alive())
@@ -265,6 +312,12 @@ class ServerTests(unittest.TestCase):
                     self.assertTrue(any(event['type'] == 'status' and 'остановлен' in event['content']
                                         for event in results))
                 self.assertFalse(self.state.pending)
+            # DeepSeek learns with the next message why its command has no result, and only once.
+            with patch.object(client, 'send_chat_completion', return_value=(2, 'ok')) as send:
+                self.chat(conversation, message='next')
+                self.assertEqual(send.call_args.args[1], f'{note}{client.turn_context()}\n\nЗапрос пользователя:\nnext')
+                self.chat(conversation, message='again')
+                self.assertNotIn('Оболочка: пользователь', send.call_args.args[1])
 
     def test_auth_explicit_background_and_sanitized_error(self):
         entered, release = threading.Event(), threading.Event()
@@ -440,13 +493,52 @@ class ServerTests(unittest.TestCase):
             self.assertTrue(prompt.endswith('Запрос пользователя:\nsecond'))
         self.assertEqual(len(self.state.conversations), 1)
 
-    def test_command_limit_and_non_terminal_text(self):
-        with patch.object(client, 'send_chat_completion', return_value=(1, 'text <terminal>   </terminal>')), patch.object(client, 'execute_terminal_command_with_callback') as execute:
+    def test_broken_block_is_sent_back_to_deepseek(self):
+        # An empty or unclosed block goes back to DeepSeek instead of waiting for the user to retype it.
+        replies = [(1, 'text <terminal>   </terminal>'), (2, 'Повторю: <terminal>dir'), (3, '<terminal></terminal>')]
+        with patch.object(client, 'send_chat_completion', side_effect=replies) as send, patch.object(client, 'execute_terminal_command_with_callback') as execute:
             events = self.chat()
             execute.assert_not_called()
-            self.assertTrue(any(event['type'] == 'notice' for event in events))
-        with patch.object(web, 'MAX_COMMANDS', 0), patch.object(client, 'send_chat_completion', return_value=(1, '<terminal>echo hello</terminal>')):
-            self.assertTrue(any(event['type'] == 'error' for event in self.chat()))
+        self.assertEqual(send.call_count, web.MAX_REPAIRS + 1)
+        for call in send.call_args_list[1:]:
+            self.assertEqual(call.args[1], f'{web.BROKEN_BLOCK_PROMPT}\n\n{client.turn_context()}')
+        self.assertEqual([call.args[2] for call in send.call_args_list], [None, 1, 2])
+        notices = [event['content'] for event in events if event['type'] == 'notice']
+        self.assertEqual(len(notices), web.MAX_REPAIRS + 1)
+        self.assertIn('не выполнялась', notices[-1])
+        self.assertEqual(events[-1]['type'], 'done')
+        with patch.object(client, 'send_chat_completion', return_value=(4, 'ok')) as send:
+            self.chat(message='next')
+        self.assertTrue(send.call_args.args[1].startswith(web.BROKEN_BLOCK_NOTE))
+
+        results = []
+        with patch.object(client, 'send_chat_completion', side_effect=[(1, '<terminal>dir'), (2, '<terminal>dir</terminal>'), (3, 'Готово')]) as send, patch.object(client, 'execute_terminal_command_with_callback', return_value='ok\n') as execute:
+            worker = threading.Thread(target=lambda: results.extend(self.chat('repaired')))
+            worker.start()
+            self.request('POST', '/api/approve', {'id': self.wait_pending(), 'approved': True})
+            worker.join(4)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(execute.call_args.args[0], 'dir')
+        self.assertEqual(send.call_count, 3)
+
+    def test_long_runs_pause_at_checkpoints_instead_of_failing(self):
+        results = []
+        replies = [(index, f'<terminal>echo {index}</terminal>') for index in range(5)] + [(5, 'Готово')]
+        with patch.object(web, 'CHECKPOINT_COMMANDS', 2), patch.object(client, 'send_chat_completion', side_effect=replies), patch.object(client, 'execute_terminal_command_with_callback', return_value='ok\n') as execute:
+            worker = threading.Thread(target=lambda: results.extend(self.chat()))
+            worker.start()
+            for _ in range(5):
+                request_id = self.wait_pending()
+                self.assertEqual(self.request('POST', '/api/approve', {'id': request_id, 'approved': True})[0], 200)
+                deadline = time.monotonic() + 3
+                while request_id in self.state.pending and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            worker.join(4)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(execute.call_count, 5)
+        checkpoints = [event['checkpoint'] for event in results if event['type'] == 'terminal_request']
+        self.assertEqual(checkpoints, [0, 0, 2, 0, 4])
+        self.assertFalse(any(event['type'] == 'error' for event in results))
 
 
 if __name__ == '__main__':

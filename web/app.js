@@ -10,7 +10,10 @@ function load(key, fallback) { try { return JSON.parse(localStorage.getItem(key)
 const savedChats = load(STORE, []);
 let conversations = Array.isArray(savedChats) ? savedChats.filter(chat => chat && typeof chat.id === 'string' && Array.isArray(chat.messages)) : [];
 const systemTheme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-let preferences = { theme: systemTheme, expert: false, search: false, thinkingOpen: false, systemPrompt: null, ...load(PREFS, {}) };
+let preferences = { theme: systemTheme, deepThink: true, search: false, autoApprove: false, outputMode: 'compact', thinkingOpen: false, systemPrompt: null, ...load(PREFS, {}) };
+const OUTPUT_MODES = ['compact', 'tail', 'full'];
+if (!OUTPUT_MODES.includes(preferences.outputMode)) preferences.outputMode = preferences.fullOutput ? 'full' : 'compact';
+delete preferences.fullOutput;
 let activeId = null;
 let run = null;
 let serverStatus = {};
@@ -43,10 +46,11 @@ function applyTheme() {
   $('meta[name="theme-color"]').content = preferences.theme === 'dark' ? '#111318' : '#eff0f4';
 }
 function updateOptions() {
-  $('#expert-button').setAttribute('aria-pressed', String(Boolean(preferences.expert)));
+  $('#deepthink-button').setAttribute('aria-pressed', String(preferences.deepThink !== false));
   $('#search-button').setAttribute('aria-pressed', String(Boolean(preferences.search)));
+  $('#auto-approve-switch').setAttribute('aria-checked', String(Boolean(preferences.autoApprove)));
   $('#thinking-switch').setAttribute('aria-checked', String(Boolean(preferences.thinkingOpen)));
-  $('#new-session-switch').setAttribute('aria-checked', String(preferences.newSession !== false));
+  for (const option of document.querySelectorAll('#output-mode [data-mode]')) option.setAttribute('aria-checked', String(option.dataset.mode === preferences.outputMode));
 }
 function closeSidebar() {
   $('#sidebar').classList.remove('open');
@@ -116,9 +120,11 @@ function renderHistory() {
     history.append(item);
   }
 }
+// DeepSeek sometimes ends a terminal block with its own tool-call tags (</｜｜DSML｜｜ parameter>); they are never text.
+const DSML_TAG = /<\/?[｜|]{1,2}\s*DSML\s*[｜|]{1,2}[^>]*>/g;
 // Until the server turns a <terminal> block into an approval card, show it as code instead of letting the sanitizer drop the tag.
 function showTerminalBlocks(value) {
-  return value.replace(/<terminal>([\s\S]*?)(?:<\/terminal>|$)/g, (_, command) => `\n\n\`\`\`\n${command.trim()}\n\`\`\`\n\n`);
+  return value.replace(DSML_TAG, '').replace(/<terminal>([\s\S]*?)(?:<\/terminal>|$)/g, (_, command) => `\n\n\`\`\`\n${command.trim()}\n\`\`\`\n\n`);
 }
 function markdown(value) {
   value = showTerminalBlocks(value);
@@ -167,7 +173,10 @@ function renderMessage(message) {
   time.textContent = timeLabel(message.createdAt);
   meta.append(time);
   element.append(meta);
-  for (const part of message.parts || []) element.append(renderPart(part, message));
+  for (const part of message.parts || []) {
+    // Older chats kept a card for every prompt sent after a command; only the first prompt is shown.
+    if (part.type !== 'context' || !part.step) element.append(renderPart(part, message));
+  }
   if (message.error) {
     const error = document.createElement('div');
     error.className = 'message-error'; error.textContent = message.error; element.append(error);
@@ -236,8 +245,7 @@ function renderPart(part, message) {
     const details = document.createElement('details'); details.className = 'context-card';
     details.open = Boolean(part.open);
     const summary = document.createElement('summary');
-    const label = part.step ? 'Отправлено DeepSeek после команды' : 'Контекст запроса';
-    summary.innerHTML = `${icon('code')}<span class="context-label">${label}</span><span class="context-size">${formatNumber(part.length || part.content.length)} симв.</span>${icon('chevron', 'icon thinking-chevron')}`;
+    summary.innerHTML = `${icon('code')}<span class="context-label">Контекст запроса</span><span class="context-size">${formatNumber(part.length || part.content.length)} симв.</span>${icon('chevron', 'icon thinking-chevron')}`;
     const content = document.createElement('pre'); content.className = 'context-content';
     content.textContent = part.content + (part.length > part.content.length ? `\n… обрезано для показа, всего ${formatNumber(part.length)} симв.` : '');
     details.append(summary, content);
@@ -282,48 +290,128 @@ function terminalState(part, code) {
   if (part.state === 'denied') return ['Отклонено', 'muted'];
   if (part.state === 'interrupted') return ['Прервано', 'muted'];
   if (code === null) return ['Готово', 'muted'];
-  return code === 0 ? ['Код 0', 'ok'] : [`Код ${code}`, 'err'];
+  return code === 0 ? ['Успешно', 'ok', 'Код завершения 0'] : [`Ошибка · код ${code}`, 'err', `Команда завершилась с кодом ${code}`];
+}
+async function decideTerminal(part, approved) {
+  if (part.state !== 'pending') return;
+  part.state = approved ? 'running' : 'denied';
+  updateLiveMessage();
+  try {
+    await api('/api/approve', { id: part.id, approved });
+    persist();
+  } catch (error) {
+    if (run && part.state !== 'done') { part.state = 'pending'; part.auto = false; }
+    updateLiveMessage();
+    toast(error.message);
+  }
+}
+function autoApprove(part) {
+  // A checkpoint after many commands in a row always waits for the user.
+  if (!preferences.autoApprove || part.state !== 'pending' || part.checkpoint) return;
+  part.auto = true;
+  decideTerminal(part, true);
+}
+function setAutoApprove(enabled) {
+  preferences.autoApprove = enabled; updateOptions(); savePreferences();
+  if (!enabled) return;
+  toast('Команды будут выполняться без подтверждения');
+  for (const part of run?.message.parts || []) if (part.type === 'terminal') autoApprove(part);
+}
+const OUTPUT_PREVIEW_LINES = 5;
+// The live message is re-rendered on every streamed chunk, which can replace a button between press and
+// release so its click never fires. A mouse acts on the press; touch and keyboard keep the click.
+function onPress(element, handler) {
+  element.onpointerdown = event => { if (event.pointerType === 'mouse' && event.button === 0) handler(); };
+  element.onclick = event => { if (event.pointerType !== 'mouse') handler(); };
+}
+function formatElapsed(seconds) {
+  if (seconds < 0.1) return '< 0,1 с';
+  if (seconds < 60) return `${seconds.toLocaleString('ru-RU', { maximumFractionDigits: seconds < 10 ? 1 : 0 })} с`;
+  return `${Math.floor(seconds / 60)} мин ${Math.round(seconds % 60)} с`;
+}
+// Auto mark, run time and state, shared by the full header and the compact row.
+function terminalBadges(part, [stateText, stateClass, stateTitle]) {
+  const badges = [];
+  if (part.auto) { const auto = document.createElement('span'); auto.className = 'terminal-auto'; auto.textContent = 'авто'; auto.title = 'Выполнено без подтверждения'; badges.push(auto); }
+  if (Number.isFinite(part.elapsed)) { const time = document.createElement('span'); time.className = 'terminal-time'; time.textContent = formatElapsed(part.elapsed); time.title = 'Время выполнения'; badges.push(time); }
+  const label = document.createElement('span'); label.className = `terminal-state ${stateClass}`;
+  if (stateTitle) label.title = stateTitle;
+  if (part.state === 'running' && run) label.innerHTML = '<span class="activity-indicator"></span>';
+  label.append(stateText);
+  badges.push(label);
+  return badges;
 }
 function renderTerminal(part) {
   const awaiting = part.state === 'pending' && run;
+  const mode = preferences.outputMode;
   const card = document.createElement('section'); card.className = `terminal-card${awaiting ? ' pending' : ''}`;
   const windows = /^[a-z]:\\/i.test(part.cwd || '') || String(serverStatus.platform || '').startsWith('win');
   const exit = EXIT_CODE.exec(part.output || '');
-  const [stateText, stateClass] = terminalState(part, part.state === 'done' && exit ? Number(exit[1]) : null);
-  const header = document.createElement('div'); header.className = 'terminal-header';
+  const state = terminalState(part, part.state === 'done' && exit ? Number(exit[1]) : null);
+  const outputText = exit ? part.output.slice(exit[0].length) : part.output;
+  const lines = outputText ? outputText.replace(/\n$/, '').split('\n') : [];
+  const lineCount = `${formatNumber(lines.length)} ${plural(lines.length, 'строка', 'строки', 'строк')}`;
+  const collapsible = Boolean(outputText) && (mode === 'compact' || (mode === 'tail' && lines.length > OUTPUT_PREVIEW_LINES));
+  const toggleOutput = () => { part.expanded = !part.expanded; card.replaceWith(renderTerminal(part)); persist(); };
+  if (mode === 'compact' && !awaiting && !part.expanded) {
+    // One line: the command, run time and result; the output opens on click.
+    card.classList.add('compact');
+    const row = document.createElement(outputText ? 'button' : 'div'); row.className = 'terminal-row';
+    row.innerHTML = icon('terminal');
+    const command = document.createElement('code'); command.className = 'terminal-row-command';
+    command.textContent = `${windows ? 'PS>' : '$'} ${part.command}`; command.title = `${part.cwd || ''}\n${part.command}`;
+    row.append(command, ...terminalBadges(part, state));
+    if (outputText) {
+      row.insertAdjacentHTML('beforeend', icon('chevron', 'icon terminal-row-chevron'));
+      row.setAttribute('aria-expanded', 'false');
+      row.title = `Показать вывод · ${lineCount}`;
+      onPress(row, toggleOutput);
+    }
+    card.append(row);
+    return card;
+  }
+  // An expanded card collapses from its header, which stays in view above long output.
+  const collapsesFromHeader = collapsible && part.expanded;
+  const header = document.createElement(collapsesFromHeader ? 'button' : 'div'); header.className = 'terminal-header';
   header.innerHTML = `${icon('terminal')}<span class="terminal-shell">${windows ? 'PowerShell' : 'sh'}</span>`;
   const cwd = document.createElement('span'); cwd.className = 'terminal-cwd'; cwd.textContent = ltr(part.cwd || ''); cwd.title = part.cwd || '';
-  const label = document.createElement('span'); label.className = `terminal-state ${stateClass}`;
-  if (part.state === 'running' && run) label.innerHTML = '<span class="activity-indicator"></span>';
-  label.append(stateText);
-  header.append(cwd, label);
+  header.append(cwd, ...terminalBadges(part, state));
+  if (collapsesFromHeader) {
+    header.insertAdjacentHTML('beforeend', icon('chevron', 'icon terminal-header-chevron'));
+    header.setAttribute('aria-expanded', 'true');
+    header.title = 'Свернуть вывод';
+    onPress(header, toggleOutput);
+  }
   const command = document.createElement('pre'); command.className = 'terminal-command';
   const prompt = document.createElement('span'); prompt.className = 'terminal-prompt'; prompt.textContent = windows ? 'PS> ' : '$ ';
   command.append(prompt, part.command);
   card.append(header, command);
   if (awaiting) {
     const approval = document.createElement('div'); approval.className = 'terminal-approval';
-    const explanation = document.createElement('p'); explanation.textContent = 'Выполнить эту команду?';
+    const explanation = document.createElement('p');
+    explanation.textContent = part.checkpoint ? `DeepSeek выполнил уже ${formatNumber(part.checkpoint)} ${plural(part.checkpoint, 'команду', 'команды', 'команд')} подряд. Продолжить?`
+      : part.fenced ? 'DeepSeek прислал команду обычным блоком кода. Выполнить её?' : 'Выполнить эту команду?';
     const buttons = document.createElement('div'); buttons.className = 'terminal-buttons';
     const allow = document.createElement('button'); allow.className = 'primary-button'; allow.innerHTML = `${icon('check')}Выполнить`;
+    const always = document.createElement('button'); always.className = 'tonal-button'; always.innerHTML = `${icon('bolt')}Всегда`;
+    always.title = 'Выполнить и дальше запускать команды без подтверждения';
     const deny = document.createElement('button'); deny.className = 'tonal-button'; deny.textContent = 'Отклонить';
-    const decide = async approved => {
-      part.state = approved ? 'running' : 'denied';
-      updateLiveMessage();
-      try {
-        await api('/api/approve', { id: part.id, approved });
-        persist();
-      } catch (error) {
-        if (run && part.state !== 'done') part.state = 'pending';
-        updateLiveMessage();
-        toast(error.message);
-      }
-    };
-    allow.onclick = () => decide(true); deny.onclick = () => decide(false);
-    buttons.append(allow, deny); approval.append(explanation, buttons); card.append(approval);
+    allow.onclick = () => decideTerminal(part, true); deny.onclick = () => decideTerminal(part, false);
+    always.onclick = () => { decideTerminal(part, true); setAutoApprove(true); };
+    buttons.append(allow, ...(preferences.autoApprove ? [] : [always]), deny); approval.append(explanation, buttons); card.append(approval);
   }
-  const outputText = exit ? part.output.slice(exit[0].length) : part.output;
-  if (outputText) { const output = document.createElement('pre'); output.className = 'terminal-output'; output.textContent = outputText; card.append(output); }
+  if (outputText) {
+    const output = document.createElement('pre'); output.className = 'terminal-output';
+    output.textContent = mode === 'tail' && collapsible && !part.expanded ? lines.slice(-OUTPUT_PREVIEW_LINES).join('\n') : outputText;
+    card.append(output);
+    if (collapsible && !part.expanded) {
+      const toggle = document.createElement('button'); toggle.className = 'terminal-toggle';
+      toggle.innerHTML = icon('chevron', 'icon terminal-toggle-chevron');
+      toggle.append(`Показать весь вывод · ${lineCount}`);
+      onPress(toggle, toggleOutput);
+      card.append(toggle);
+    }
+  }
   return card;
 }
 function updateLiveMessage() {
@@ -352,7 +440,7 @@ function setBusy(busy) {
   send.title = busy ? 'Остановить ответ' : 'Отправить сообщение';
   send.disabled = !busy && !$('#prompt').value.trim();
   $('#search-button').disabled = busy;
-  $('#expert-button').disabled = busy;
+  $('#deepthink-button').disabled = busy;
 }
 function addTextPart(type, content) {
   const last = run.message.parts.at(-1);
@@ -377,7 +465,7 @@ function handleEvent(event) {
       $('#run-status-text').textContent = 'Ищет в интернете…';
       break;
     }
-    case 'context': run.message.parts.push({ type: 'context', step: event.step, length: event.length, content }); break;
+    case 'context': run.message.parts.push({ type: 'context', length: event.length, content }); break;
     case 'notice': run.message.parts.push({ type: 'notice', content }); break;
     case 'session': {
       const chat = conversations.find(entry => entry.id === run.chatId);
@@ -390,12 +478,20 @@ function handleEvent(event) {
       break;
     }
     case 'terminal_request': {
+      // The card shows the command, so drop the block it came from: the reply ends with it, and its
+      // command can itself contain the tag text or end with DeepSeek's tool-call tags.
+      const reply = run.message.parts.findLast(part => part.type === 'response');
+      if (reply && reply.content.includes('<terminal>')) reply.content = reply.content.slice(0, reply.content.indexOf('<terminal>'));
       for (const part of run.message.parts) {
-        if (part.type === 'response') part.content = part.content.replace(/<terminal>[\s\S]*?<\/terminal>/g, '').trim();
+        if (part.type === 'response') part.content = part.content.replace(/<terminal>[\s\S]*?<\/terminal>/g, '').replace(DSML_TAG, '').trim();
       }
+      if (event.fenced && reply) reply.content = reply.content.replace(/(^|\n)[ \t]*```[^\n]*\n(?:(?!```)[\s\S])*```\s*$/, '').trim();
       run.message.parts = run.message.parts.filter(part => part.type !== 'response' || part.content);
-      run.message.parts.push({ type: 'terminal', id: event.id, command: event.command, cwd: event.cwd, state: 'pending', output: '' });
+      const terminal = { type: 'terminal', id: event.id, command: event.command, cwd: event.cwd, state: 'pending', output: '', fenced: event.fenced === true,
+        checkpoint: Number.isInteger(event.checkpoint) && event.checkpoint > 0 ? event.checkpoint : 0 };
+      run.message.parts.push(terminal);
       $('#run-status-text').textContent = 'Команда ждёт вашего разрешения';
+      autoApprove(terminal);
       break;
     }
     case 'terminal_output': {
@@ -409,6 +505,7 @@ function handleEvent(event) {
       if (part) {
         if (part.state !== 'denied') part.state = event.approved === false ? 'denied' : 'done';
         if (content) part.output = content.slice(-150000);
+        if (typeof event.elapsed === 'number' && event.elapsed >= 0) part.elapsed = event.elapsed;
       }
       break;
     }
@@ -459,7 +556,7 @@ async function sendMessage() {
   try {
     const response = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: thisRun.controller.signal,
-      body: JSON.stringify({ conversation_id: chat.id, message: content, history: requestHistory(chat), search: Boolean(preferences.search), expert: Boolean(preferences.expert), new_session: preferences.newSession !== false, ...(preferences.systemPrompt != null ? { system_prompt: preferences.systemPrompt } : {}) }),
+      body: JSON.stringify({ conversation_id: chat.id, message: content, history: requestHistory(chat), search: Boolean(preferences.search), thinking: preferences.deepThink !== false, ...(preferences.systemPrompt != null ? { system_prompt: preferences.systemPrompt } : {}) }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -591,7 +688,7 @@ $('#pick-workspace').onclick = async () => {
 };
 $('#new-chat').onclick = newChat;
 $('#theme-button').onclick = () => { preferences.theme = preferences.theme === 'dark' ? 'light' : 'dark'; applyTheme(); savePreferences(); };
-$('#expert-button').onclick = () => { preferences.expert = !preferences.expert; updateOptions(); savePreferences(); };
+$('#deepthink-button').onclick = () => { preferences.deepThink = preferences.deepThink === false; updateOptions(); savePreferences(); };
 $('#search-button').onclick = () => { preferences.search = !preferences.search; updateOptions(); savePreferences(); };
 $('#menu-button').onclick = () => { $('#sidebar').classList.add('open'); $('#sidebar-scrim').classList.add('open'); };
 $('#sidebar-scrim').onclick = closeSidebar;
@@ -619,7 +716,10 @@ $('#save-settings').onclick = () => {
 };
 $('#reset-prompt').onclick = () => { $('#system-prompt').value = defaultPrompt; };
 $('#thinking-switch').onclick = () => { preferences.thinkingOpen = !preferences.thinkingOpen; updateOptions(); savePreferences(); };
-$('#new-session-switch').onclick = () => { preferences.newSession = preferences.newSession === false; updateOptions(); savePreferences(); };
+$('#auto-approve-switch').onclick = () => setAutoApprove(!preferences.autoApprove);
+for (const option of document.querySelectorAll('#output-mode [data-mode]')) option.onclick = () => {
+  preferences.outputMode = option.dataset.mode; updateOptions(); savePreferences(); renderConversation(true);
+};
 $('#connection').onclick = () => $('#settings-button').click();
 $('#auth-button').onclick = async () => {
   if (run) { toast('Остановите ответ перед обновлением авторизации.'); return; }

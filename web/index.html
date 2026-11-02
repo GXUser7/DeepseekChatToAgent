@@ -17,7 +17,6 @@
     <defs>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
-      <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7L12 3Z"/></symbol>
       <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 18v3m6-3v3M9 18h6m-6-3h6m-7.5-3A6 6 0 1 1 16.5 12c-1.4 1-1.5 1.6-1.5 3H9c0-1.4-.1-2-1.5-3ZM12 1v1M3 4l1 1m16-1-1 1M1 11h2m18 0h2"/></symbol>
       <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
       <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5"/></symbol>
@@ -36,7 +35,8 @@
       <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></symbol>
       <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
       <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/></symbol>
-      <symbol id="i-flower" viewBox="0 0 40 40"><path d="M20 11C10-5-5 10 11 20-5 30 10 45 20 29c10 16 25 1 9-9C45 10 30-5 20 11Z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
+      <symbol id="i-flower"viewBox="0 0 40 40"><path d="M20 11C10-5-5 10 11 20-5 30 10 45 20 29c10 16 25 1 9-9C45 10 30-5 20 11Z" fill="currentColor" stroke="none"/></symbol>
     </defs>
   </svg>
 
@@ -78,7 +78,7 @@
           <label class="sr-only" for="prompt">Сообщение DeepSeek</label>
           <textarea id="prompt" rows="1" placeholder="Сообщение DeepSeek…" maxlength="60000"></textarea>
           <div class="composer-bottom">
-            <div class="composer-options"><button type="button" class="option-chip" id="expert-button" aria-pressed="false" title="Экспертный режим DeepSeek"><svg class="icon"><use href="#i-spark"/></svg><span>Эксперт</span></button><button type="button" class="option-chip" id="search-button" aria-pressed="false" title="Искать информацию в интернете"><svg class="icon"><use href="#i-globe"/></svg><span>Поиск в сети</span></button></div>
+            <div class="composer-options"><button type="button" class="option-chip" id="deepthink-button" aria-pressed="true" title="Режим размышлений DeepSeek (DeepThink)"><svg class="icon"><use href="#i-brain"/></svg><span>Размышления</span></button><button type="button" class="option-chip" id="search-button" aria-pressed="false" title="Искать информацию в интернете"><svg class="icon"><use href="#i-globe"/></svg><span>Поиск в сети</span></button></div>
             <button class="send-button" id="send-button" type="submit" aria-label="Отправить сообщение" disabled><svg class="icon"><use href="#i-arrow"/></svg></button>
           </div>
         </form>
@@ -91,7 +91,8 @@
     <h2 id="settings-title">Настройки</h2>
     <div class="settings-section"><h3>Подключение к DeepSeek</h3><div class="auth-status"><span class="status-dot"></span><span id="auth-description">Проверка конфигурации…</span></div><p class="field-hint">Для входа откроется Chrome. Войдите в DeepSeek и отправьте там одно сообщение, чтобы сохранить сессию.</p><button class="tonal-button" id="auth-button"><svg class="icon"><use href="#i-globe"/></svg><span>Обновить авторизацию</span></button></div>
     <div class="settings-section"><h3>Стартовый промпт</h3><p class="field-hint">Для новых диалогов. ОС, оболочка и рабочая папка добавляются автоматически.</p><label class="sr-only" for="system-prompt">Стартовый промпт</label><textarea id="system-prompt" rows="7" spellcheck="false" maxlength="16000"></textarea><button class="text-button" id="reset-prompt">Вернуть по умолчанию</button></div>
-    <div class="settings-section settings-preferences"><div><h3>Новый чат на сайте для каждого диалога</h3><p class="field-hint">Каждый диалог Orbit получает отдельный чат на chat.deepseek.com. Если выключить, все диалоги идут в один чат, сохранённый при авторизации.</p></div><button class="switch" id="new-session-switch" role="switch" aria-checked="true" aria-label="Новый чат на сайте для каждого диалога"><span></span></button></div>
+    <div class="settings-section settings-preferences"><div><h3>Автоапрув команд</h3><p class="field-hint">Все команды DeepSeek выполняются сразу, без карточки с подтверждением. Включайте только для папок, где это безопасно.</p></div><button class="switch" id="auto-approve-switch" role="switch" aria-checked="false" aria-label="Автоапрув команд"><span></span></button></div>
+    <div class="settings-section"><h3>Вывод команд</h3><p class="field-hint">«Компактно» — одна строка с командой, временем и кодом завершения, вывод раскрывается по нажатию. «5 строк» — последние строки вывода.</p><div class="segmented" id="output-mode" role="radiogroup" aria-label="Вывод команд"><button type="button" role="radio" data-mode="compact" aria-checked="true">Компактно</button><button type="button" role="radio" data-mode="tail" aria-checked="false">5 строк</button><button type="button" role="radio" data-mode="full" aria-checked="false">Полностью</button></div></div>
     <div class="settings-section settings-preferences"><div><h3>Раскрывать размышления</h3></div><button class="switch" id="thinking-switch" role="switch" aria-checked="false" aria-label="Раскрывать размышления"><span></span></button></div>
     <div class="settings-section"><h3>История на этом устройстве</h3><p class="field-hint">Диалоги хранятся в браузере, авторизация — только на локальном сервере. Очистка не удаляет чаты на стороне DeepSeek.</p><div class="settings-data-actions"><button class="tonal-button" id="export-button"><svg class="icon"><use href="#i-download"/></svg>Экспорт</button><button class="text-button danger-text" id="clear-history"><svg class="icon"><use href="#i-trash"/></svg>Очистить историю</button></div></div>
     <div class="dialog-footer"><button class="primary-button" id="save-settings">Готово</button></div>

@@ -9,8 +9,10 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 import uuid
@@ -19,8 +21,19 @@ import deepseek_client as client
 
 MAX_BODY = 768 * 1024
 MAX_CONVERSATIONS = 256
-MAX_COMMANDS = 12
+# Instead of a hard command limit, every CHECKPOINT_COMMANDS-th command in a row needs the user's
+# click even with auto-approve on, so a runaway loop stops but long tasks can go on.
+CHECKPOINT_COMMANDS = 25
+# How many times DeepSeek is asked to resend a broken terminal block before the turn ends.
+MAX_REPAIRS = 2
 MAX_CONTEXT_EVENT = 20000
+BROKEN_BLOCK_PROMPT = ('Оболочка: terminal-блок в твоём ответе был пустым или незакрытым, поэтому команда не '
+                       'выполнялась. Если команда нужна, повтори её целиком одним блоком <terminal>команда</terminal> '
+                       'в конце ответа. Если не нужна, ответь без terminal-тегов.')
+# Told to DeepSeek with the user's next message, so it knows why its last command has no result.
+BROKEN_BLOCK_NOTE = 'Оболочка: terminal-блок в твоём прошлом ответе был пустым или незакрытым, команда не выполнялась.\n'
+DECLINED_NOTE = 'Оболочка: пользователь отклонил команду из твоего прошлого ответа, она не выполнялась.\n'
+STOPPED_NOTE = 'Оболочка: пользователь остановил запрос, результат команды из твоего прошлого ответа не получен.\n'
 WEB_ROOT = Path(__file__).resolve().parent / 'web'
 
 
@@ -93,7 +106,7 @@ class AppState:
             if conversation_id not in self.conversations:
                 if len(self.conversations) >= MAX_CONVERSATIONS:
                     raise APIError(409, 'Достигнут предел диалогов. Перезапустите сервер.')
-                self.conversations[conversation_id] = {'parent': None, 'started': False, 'session': None}
+                self.conversations[conversation_id] = {'parent': None, 'started': False, 'session': None, 'note': ''}
             run = Run(conversation_id)
             self.active = run
             return run
@@ -213,22 +226,6 @@ class AppState:
                 self.workspace_error = 'Не удалось открыть окно выбора папки. Введите путь вручную.'
                 raise APIError(503, self.workspace_error) from None
 
-    @staticmethod
-    def _chat_session(config, create, run, emit):
-        session = None
-        if create:
-            emit({'type': 'status', 'content': 'Создание чата на сайте DeepSeek...'})
-            try:
-                session = client.create_chat_session(config, stop_event=run.stop)
-            except (client.ChatCancelled, client.AuthenticationError):
-                raise
-            except client.ChatError:
-                emit({'type': 'notice', 'content': 'Не удалось создать новый чат на сайте DeepSeek, '
-                                                   'диалог продолжится в чате из config.json.'})
-        emit({'type': 'session', 'created': session is not None,
-              'url': f"https://chat.deepseek.com/a/chat/s/{session or config['chat_session_id']}"})
-        return session or config['chat_session_id']
-
     def chat(self, run, body, emit):
         config = client.load_config(auto_auth=False)
         conversation = self.conversations[run.conversation_id]
@@ -237,56 +234,77 @@ class AppState:
             prompt = client.initial_prompt(prompt, body.get('system_prompt', client.SYSTEM_INIT_PROMPT),
                                            history=body.get('history'))
         else:
-            prompt = f'{client.local_context()}\n\nЗапрос пользователя:\n{prompt}'
+            prompt = f"{conversation['note']}{client.turn_context()}\n\nЗапрос пользователя:\n{prompt}"
         if conversation['session'] is None:
-            conversation['session'] = self._chat_session(config, body.get('new_session', False), run, emit)
+            # Every dialog gets its own chat on the site. Writing into config.json's chat with no parent
+            # would replace that chat's first message and keep its settings, so a failure is an error.
+            emit({'type': 'status', 'content': 'Создание чата на сайте DeepSeek...'})
+            conversation['session'] = client.create_chat_session(config, stop_event=run.stop)
+            emit({'type': 'session', 'url': f"https://chat.deepseek.com/a/chat/s/{conversation['session']}"})
         session_config = dict(config, chat_session_id=conversation['session'])
-        for step in range(MAX_COMMANDS + 1):
+        emit({'type': 'context', 'length': len(prompt), 'content': prompt[:MAX_CONTEXT_EVENT]})
+        executed = repairs = 0
+        while True:
             client.check_cancelled(run.stop)
-            emit({'type': 'context', 'step': step, 'length': len(prompt),
-                  'content': prompt[:MAX_CONTEXT_EVENT]})
             result = client.send_chat_completion(
                 session_config, prompt, conversation['parent'], search_enabled=body.get('search', False),
-                model_type='expert' if body.get('expert', False) else 'default',
-                sse_callback=emit, stop_event=run.stop,
+                thinking_enabled=body.get('thinking', True), sse_callback=emit, stop_event=run.stop,
             )
             client.check_cancelled(run.stop)
             if not isinstance(result, tuple) or len(result) != 2:
                 raise client.ChatError('DeepSeek не вернул ответ. Проверьте авторизацию и повторите запрос.')
             conversation['parent'], response = result
             conversation['started'] = True
+            conversation['note'] = ''
             commands = client.terminal_blocks(response)
+            # DeepSeek sometimes forgets the tags; a shell fence that ends the reply counts as the command.
+            fenced = not commands and client.fenced_command(response)
+            if fenced:
+                commands = [fenced]
             if not commands:
-                if '<terminal>' in response:
+                if '<terminal>' not in response:
+                    return
+                if repairs == MAX_REPAIRS:
+                    conversation['note'] = BROKEN_BLOCK_NOTE
                     emit({'type': 'notice', 'content': 'Пустой или незакрытый terminal-блок: команда не выполнялась.'})
-                return
+                    return
+                repairs += 1
+                emit({'type': 'notice', 'content': 'Пустой или незакрытый terminal-блок — DeepSeek попросили повторить команду.'})
+                prompt = f'{BROKEN_BLOCK_PROMPT}\n\n{client.turn_context()}'
+                continue
+            repairs = 0
             command = commands[0]
-            if step >= MAX_COMMANDS:
-                raise client.ChatError('Достигнут предел 12 команд. Отправьте новое сообщение для продолжения.')
             request_id = uuid.uuid4().hex
             approval = PendingApproval(run)
             with self.lock:
                 self.pending[request_id] = approval
+            conversation['note'] = STOPPED_NOTE
             try:
-                emit({'type': 'terminal_request', 'id': request_id, 'command': command, 'cwd': os.getcwd()})
+                emit({'type': 'terminal_request', 'id': request_id, 'command': command, 'cwd': os.getcwd(),
+                      'fenced': bool(fenced),
+                      'checkpoint': executed if executed and executed % CHECKPOINT_COMMANDS == 0 else 0})
                 while not approval.event.wait(0.2):
                     client.check_cancelled(run.stop)
                 client.check_cancelled(run.stop)
                 if not approval.approved:
+                    conversation['note'] = DECLINED_NOTE
                     emit({'type': 'terminal_done', 'id': request_id, 'approved': False,
                           'content': 'Выполнение команды отклонено.'})
                     return
+                started = time.monotonic()
                 output = client.execute_terminal_command_with_callback(
                     command,
                     callback=lambda content: emit({'type': 'terminal_output', 'id': request_id, 'content': content}),
                     stop_event=run.stop,
                 )
                 client.check_cancelled(run.stop)
-                emit({'type': 'terminal_done', 'id': request_id, 'approved': True, 'content': output})
+                executed += 1
+                emit({'type': 'terminal_done', 'id': request_id, 'approved': True, 'content': output,
+                      'elapsed': round(time.monotonic() - started, 2)})
                 skipped = ''
                 if len(commands) > 1:
                     skipped = f'Выполнена только первая команда, остальные ({len(commands) - 1}) пропущены.\n'
-                prompt = f'{skipped}Результат разрешённой команды:\n{output}\n\n{client.local_context()}'
+                prompt = f'{skipped}Результат разрешённой команды:\n{output}\n\n{client.turn_context()}'
             finally:
                 with self.lock:
                     self.pending.pop(request_id, None)
@@ -294,13 +312,20 @@ class AppState:
 
 class LocalHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second server bind a port the first still listens on, and
+    # requests then reach either one at random. Take the port exclusively there instead.
+    allow_reuse_address = not sys.platform.startswith('win')
 
     def __init__(self, address=('127.0.0.1', 8765), state=None):
         if address[0] != '127.0.0.1':
             raise ValueError('The server must bind to 127.0.0.1.')
         self.state = state if state is not None else AppState()
         super().__init__(address, Handler)
+
+    def server_bind(self):
+        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def server_close(self):
         with self.state.lock:
@@ -458,7 +483,7 @@ class Handler(BaseHTTPRequestHandler):
                 conversation_id = self._string(body, 'conversation_id')
                 self._string(body, 'message', 64000)
                 self._history(body)
-                for flag in ('search', 'expert', 'new_session'):
+                for flag in ('search', 'thinking'):
                     if flag in body and type(body[flag]) is not bool:
                         raise APIError(400, f'{flag} must be a boolean.')
                 if 'system_prompt' in body:
@@ -525,7 +550,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
-    with LocalHTTPServer(('127.0.0.1', args.port)) as server:
+    try:
+        server = LocalHTTPServer(('127.0.0.1', args.port))
+    except OSError:
+        print(f'Порт {args.port} уже занят — вероятно, сервер Orbit уже запущен. '
+              f'Закройте его окно или укажите другой порт: --port.')
+        sys.exit(1)
+    with server:
         print(f'DeepSeek: http://127.0.0.1:{server.server_port}')
         try:
             server.serve_forever()

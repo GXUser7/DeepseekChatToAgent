@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+config.json
+selenium_profile/
+stream_debug.log
+*.log
+.pytest_cache/

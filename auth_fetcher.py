@@ -100,8 +100,7 @@ def try_launch_stealth_browser():
     base_dir = get_base_dir()
     chrome_path = find_chrome_path()
     
-    # Copy session first so the user is pre-authenticated!
-    copy_chrome_session()
+    # Use a separate profile; do not copy credentials from an existing browser profile.
     
     # Use our isolated selenium_profile folder to completely avoid Chrome locks!
     profile_dir = os.path.join(base_dir, "selenium_profile")
@@ -156,7 +155,7 @@ def fetch_tokens_and_save():
         print("   👉 Чтобы использовать режим Эксперта или Поиск в сети:")
         print("      - Включите переключатели «DeepThink (R1)» и/или «Поиск в сети» внизу.")
         print("      - Напишите первое сообщение (например, «начать» или вашу команду) и отправьте.")
-        print("   (Профиль скопирован, поэтому вы должны быть автоматически авторизованы!)")
+        print("   При необходимости войдите в аккаунт DeepSeek в открывшемся браузере.")
         print("2. Как только откроется страница активного чата, программа перехватит токены и продолжит в консоли.\n")
         
         session_id = None

@@ -1,0 +1,537 @@
+"""Loopback-only web interface for the DeepSeek terminal harness.
+
+Run: python web_server.py [--port 8765]
+Chat responses are newline-delimited JSON; all other API responses are JSON.
+"""
+
+import argparse
+import json
+import mimetypes
+import os
+from pathlib import Path
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote, urlsplit
+import uuid
+
+import deepseek_client as client
+
+MAX_BODY = 768 * 1024
+MAX_CONVERSATIONS = 256
+MAX_COMMANDS = 12
+MAX_CONTEXT_EVENT = 20000
+WEB_ROOT = Path(__file__).resolve().parent / 'web'
+
+
+class APIError(Exception):
+    def __init__(self, status, message):
+        self.status = status
+        self.message = message
+
+
+class PendingApproval:
+    def __init__(self, run):
+        self.run = run
+        self.event = threading.Event()
+        self.approved = False
+        self.decided = False
+
+
+class Run:
+    def __init__(self, conversation_id):
+        self.conversation_id = conversation_id
+        self.stop = threading.Event()
+
+
+def pick_workspace_directory():
+    import tkinter
+    from tkinter import filedialog
+
+    root = None
+    try:
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        return filedialog.askdirectory(parent=root, title='Выберите рабочую папку',
+                                       initialdir=os.getcwd(), mustexist=True)
+    finally:
+        if root is not None:
+            root.destroy()
+
+
+class AppState:
+    def __init__(self, web_root=WEB_ROOT):
+        self.web_root = Path(web_root).resolve()
+        self.lock = threading.Lock()
+        self.conversations = {}
+        self.active = None
+        self.pending = {}
+        self.authenticating = False
+        self.auth_error = ''
+        self.selecting_workspace = False
+        self.workspace_error = ''
+
+    def status(self):
+        try:
+            client.load_config(auto_auth=False)
+            configured = True
+        except client.AuthenticationError:
+            configured = False
+        with self.lock:
+            return {
+                'configured': configured, 'cwd': os.getcwd(), 'platform': sys.platform,
+                'system_prompt': client.SYSTEM_INIT_PROMPT, 'busy': self.active is not None,
+                'authenticating': self.authenticating, 'auth_error': self.auth_error,
+                'selecting_workspace': self.selecting_workspace, 'workspace_error': self.workspace_error,
+            }
+
+    def start_run(self, conversation_id):
+        with self.lock:
+            if self.active is not None or self.authenticating or self.selecting_workspace:
+                raise APIError(409, 'Запрос, авторизация или выбор рабочей папки уже выполняется.')
+            if conversation_id not in self.conversations:
+                if len(self.conversations) >= MAX_CONVERSATIONS:
+                    raise APIError(409, 'Достигнут предел диалогов. Перезапустите сервер.')
+                self.conversations[conversation_id] = {'parent': None, 'started': False, 'session': None}
+            run = Run(conversation_id)
+            self.active = run
+            return run
+
+    def finish_run(self, run):
+        with self.lock:
+            for request_id, approval in list(self.pending.items()):
+                if approval.run is run:
+                    approval.event.set()
+                    del self.pending[request_id]
+            if self.active is run:
+                self.active = None
+
+    def stop_run(self, conversation_id):
+        with self.lock:
+            run = self.active
+            if run is None or run.conversation_id != conversation_id:
+                return False
+            run.stop.set()
+            for approval in self.pending.values():
+                if approval.run is run:
+                    approval.event.set()
+            return True
+
+    def approve(self, request_id, approved):
+        with self.lock:
+            approval = self.pending.get(request_id)
+            if approval is None or approval.run.stop.is_set():
+                raise APIError(404, 'Запрос разрешения не найден или уже отменён.')
+            if approval.decided:
+                raise APIError(409, 'Ответ на этот запрос разрешения уже получен.')
+            approval.decided = True
+            approval.approved = approved
+            approval.event.set()
+
+    def authenticate(self):
+        with self.lock:
+            if self.active is not None or self.authenticating or self.selecting_workspace:
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            self.authenticating = True
+            self.auth_error = ''
+
+        def worker():
+            error = ''
+            try:
+                import auth_fetcher
+                if not auth_fetcher.fetch_tokens_and_save():
+                    error = 'Авторизация не завершена. Попробуйте ещё раз.'
+                else:
+                    client.load_config(auto_auth=False)
+            except Exception:
+                error = 'Не удалось выполнить авторизацию. Проверьте браузер и повторите попытку.'
+            finally:
+                with self.lock:
+                    self.auth_error = error
+                    self.authenticating = False
+                    if not error:
+                        # A new remote session cannot reuse the old session's message IDs.
+                        self.conversations.clear()
+
+        threading.Thread(target=worker, name='deepseek-auth', daemon=True).start()
+
+    @staticmethod
+    def _change_workspace(path):
+        if not isinstance(path, str) or not path.strip() or len(path) > 32767 or '\x00' in path:
+            raise APIError(400, 'Укажите корректный путь к существующей папке.')
+        try:
+            if not os.path.isdir(path):
+                raise APIError(400, 'Рабочая папка не найдена или недоступна.')
+            os.chdir(path)
+            return os.getcwd()
+        except (OSError, ValueError, UnicodeError):
+            raise APIError(400, 'Не удалось открыть рабочую папку. Проверьте путь и права доступа.') from None
+
+    def set_workspace(self, path):
+        with self.lock:
+            if self.active is not None or self.authenticating or self.selecting_workspace:
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            try:
+                cwd = self._change_workspace(path)
+            except APIError as exc:
+                self.workspace_error = exc.message
+                raise
+            self.workspace_error = ''
+            return cwd
+
+    def pick_workspace(self):
+        with self.lock:
+            if self.active is not None or self.authenticating or self.selecting_workspace:
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            self.selecting_workspace = True
+            self.workspace_error = ''
+
+        def worker():
+            error = ''
+            try:
+                path = pick_workspace_directory()
+                if path:
+                    with self.lock:
+                        self._change_workspace(path)
+            except APIError as exc:
+                error = exc.message
+            except ImportError:
+                error = 'Окно выбора папки недоступно: установите Tkinter или введите путь вручную.'
+            except Exception:
+                error = 'Не удалось выбрать рабочую папку. Повторите попытку или введите путь вручную.'
+            finally:
+                with self.lock:
+                    self.workspace_error = error
+                    self.selecting_workspace = False
+
+        try:
+            threading.Thread(target=worker, name='deepseek-workspace', daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.selecting_workspace = False
+                self.workspace_error = 'Не удалось открыть окно выбора папки. Введите путь вручную.'
+                raise APIError(503, self.workspace_error) from None
+
+    @staticmethod
+    def _chat_session(config, create, run, emit):
+        session = None
+        if create:
+            emit({'type': 'status', 'content': 'Создание чата на сайте DeepSeek...'})
+            try:
+                session = client.create_chat_session(config, stop_event=run.stop)
+            except (client.ChatCancelled, client.AuthenticationError):
+                raise
+            except client.ChatError:
+                emit({'type': 'notice', 'content': 'Не удалось создать новый чат на сайте DeepSeek, '
+                                                   'диалог продолжится в чате из config.json.'})
+        emit({'type': 'session', 'created': session is not None,
+              'url': f"https://chat.deepseek.com/a/chat/s/{session or config['chat_session_id']}"})
+        return session or config['chat_session_id']
+
+    def chat(self, run, body, emit):
+        config = client.load_config(auto_auth=False)
+        conversation = self.conversations[run.conversation_id]
+        prompt = body['message']
+        if not conversation['started']:
+            prompt = client.initial_prompt(prompt, body.get('system_prompt', client.SYSTEM_INIT_PROMPT),
+                                           history=body.get('history'))
+        else:
+            prompt = f'{client.local_context()}\n\nЗапрос пользователя:\n{prompt}'
+        if conversation['session'] is None:
+            conversation['session'] = self._chat_session(config, body.get('new_session', False), run, emit)
+        session_config = dict(config, chat_session_id=conversation['session'])
+        for step in range(MAX_COMMANDS + 1):
+            client.check_cancelled(run.stop)
+            emit({'type': 'context', 'step': step, 'length': len(prompt),
+                  'content': prompt[:MAX_CONTEXT_EVENT]})
+            result = client.send_chat_completion(
+                session_config, prompt, conversation['parent'], search_enabled=body.get('search', False),
+                model_type='expert' if body.get('expert', False) else 'default',
+                sse_callback=emit, stop_event=run.stop,
+            )
+            client.check_cancelled(run.stop)
+            if not isinstance(result, tuple) or len(result) != 2:
+                raise client.ChatError('DeepSeek не вернул ответ. Проверьте авторизацию и повторите запрос.')
+            conversation['parent'], response = result
+            conversation['started'] = True
+            commands = client.terminal_blocks(response)
+            if not commands:
+                if '<terminal>' in response:
+                    emit({'type': 'notice', 'content': 'Пустой или незакрытый terminal-блок: команда не выполнялась.'})
+                return
+            command = commands[0]
+            if step >= MAX_COMMANDS:
+                raise client.ChatError('Достигнут предел 12 команд. Отправьте новое сообщение для продолжения.')
+            request_id = uuid.uuid4().hex
+            approval = PendingApproval(run)
+            with self.lock:
+                self.pending[request_id] = approval
+            try:
+                emit({'type': 'terminal_request', 'id': request_id, 'command': command, 'cwd': os.getcwd()})
+                while not approval.event.wait(0.2):
+                    client.check_cancelled(run.stop)
+                client.check_cancelled(run.stop)
+                if not approval.approved:
+                    emit({'type': 'terminal_done', 'id': request_id, 'approved': False,
+                          'content': 'Выполнение команды отклонено.'})
+                    return
+                output = client.execute_terminal_command_with_callback(
+                    command,
+                    callback=lambda content: emit({'type': 'terminal_output', 'id': request_id, 'content': content}),
+                    stop_event=run.stop,
+                )
+                client.check_cancelled(run.stop)
+                emit({'type': 'terminal_done', 'id': request_id, 'approved': True, 'content': output})
+                skipped = ''
+                if len(commands) > 1:
+                    skipped = f'Выполнена только первая команда, остальные ({len(commands) - 1}) пропущены.\n'
+                prompt = f'{skipped}Результат разрешённой команды:\n{output}\n\n{client.local_context()}'
+            finally:
+                with self.lock:
+                    self.pending.pop(request_id, None)
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address=('127.0.0.1', 8765), state=None):
+        if address[0] != '127.0.0.1':
+            raise ValueError('The server must bind to 127.0.0.1.')
+        self.state = state if state is not None else AppState()
+        super().__init__(address, Handler)
+
+    def server_close(self):
+        with self.state.lock:
+            if self.state.active is not None:
+                self.state.active.stop.set()
+            for approval in self.state.pending.values():
+                approval.event.set()
+        super().server_close()
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    server_version = 'DeepSeekLocal/1.0'
+    sys_version = ''
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(10)
+
+    def log_message(self, format, *args):
+        # Do not log query strings, messages, commands, or auth details.
+        pass
+
+    def _guard(self):
+        port = self.server.server_port
+        allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
+        if port == 80:
+            allowed_hosts.update(('127.0.0.1', 'localhost'))
+        hosts = self.headers.get_all('Host', [])
+        if len(hosts) != 1 or hosts[0].lower() not in allowed_hosts:
+            raise APIError(403, 'Invalid Host. Open this service using its local URL.')
+        origins = self.headers.get_all('Origin', [])
+        if origins and (len(origins) != 1 or origins[0].lower() != 'http://' + hosts[0].lower()):
+            raise APIError(403, 'Cross-origin requests are not allowed.')
+        if self.headers.get('Sec-Fetch-Site') == 'cross-site':
+            raise APIError(403, 'Cross-site requests are not allowed.')
+
+    def _headers(self, status, content_type, length=None):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Content-Security-Policy',
+                         "default-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; "
+                         "style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header('Connection', 'close')
+        if length is not None:
+            self.send_header('Content-Length', str(length))
+        self.end_headers()
+        self.close_connection = True
+
+    def _json(self, status, data):
+        payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        self._headers(status, 'application/json; charset=utf-8', len(payload))
+        self.wfile.write(payload)
+
+    def _body(self, allow_empty=False):
+        if self.headers.get('Transfer-Encoding'):
+            raise APIError(400, 'Transfer-Encoding is not supported.')
+        lengths = self.headers.get_all('Content-Length', [])
+        if allow_empty and (not lengths or lengths == ['0']):
+            return {}
+        if len(lengths) != 1 or not lengths[0].isdigit():
+            raise APIError(411, 'A single Content-Length is required.')
+        if len(lengths[0]) > 10:
+            raise APIError(413, 'Request body is too large.')
+        length = int(lengths[0])
+        if length > MAX_BODY:
+            raise APIError(413, 'Request body is too large.')
+        if self.headers.get_content_type() != 'application/json':
+            raise APIError(415, 'Use application/json.')
+        try:
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError()
+            body = json.loads(raw.decode('utf-8'))
+        except (ValueError, UnicodeError, RecursionError):
+            raise APIError(400, 'Invalid JSON body.') from None
+        if not isinstance(body, dict):
+            raise APIError(400, 'JSON body must be an object.')
+        return body
+
+    @staticmethod
+    def _string(body, field, limit=128):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > limit or '\x00' in value:
+            raise APIError(400, f'Invalid {field}.')
+        return value
+
+    @staticmethod
+    def _history(body):
+        history = body.get('history', [])
+        if not isinstance(history, list) or len(history) > 30:
+            raise APIError(400, 'history must be an array of at most 30 messages.')
+        total = 0
+        for entry in history:
+            if not isinstance(entry, dict) or entry.get('role') not in ('user', 'assistant'):
+                raise APIError(400, 'Each history entry must have role user or assistant.')
+            content = entry.get('content')
+            if not isinstance(content, str) or len(content) > 24000 or '\x00' in content:
+                raise APIError(400, 'Each history content must be a string of at most 24000 characters.')
+            total += len(content)
+        if total > 64000:
+            raise APIError(400, 'history content must total at most 64000 characters.')
+
+    def _path(self):
+        parsed = urlsplit(self.path)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+            raise APIError(400, 'Invalid request path.')
+        return parsed.path
+
+    def do_GET(self):
+        try:
+            self._guard()
+            path = self._path()
+            if path == '/api/status':
+                self._json(200, self.server.state.status())
+            elif path.startswith('/api/'):
+                raise APIError(404, 'Unknown API endpoint.')
+            else:
+                self._static(path)
+        except APIError as exc:
+            self._json(exc.status, {'error': exc.message})
+        except (BrokenPipeError, ConnectionError, TimeoutError):
+            pass
+
+    def _static(self, path):
+        path = unquote(path)
+        if '\\' in path or '\x00' in path or any(part.startswith('.') for part in path.split('/') if part):
+            raise APIError(404, 'Not found.')
+        root = self.server.state.web_root
+        target = (root / ('index.html' if path == '/' else path.lstrip('/'))).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise APIError(404, 'Not found.')
+        try:
+            content = target.read_bytes()
+        except OSError:
+            raise APIError(404, 'Not found.') from None
+        mime = mimetypes.guess_type(str(target))[0] or 'application/octet-stream'
+        self._headers(200, mime, len(content))
+        self.wfile.write(content)
+
+    def do_POST(self):
+        try:
+            self._guard()
+            path = self._path()
+            if path not in ('/api/chat', '/api/approve', '/api/stop', '/api/auth',
+                            '/api/workspace', '/api/workspace/pick'):
+                raise APIError(404, 'Unknown API endpoint.')
+            body = self._body(allow_empty=path == '/api/auth')
+            state = self.server.state
+            if path == '/api/chat':
+                conversation_id = self._string(body, 'conversation_id')
+                self._string(body, 'message', 64000)
+                self._history(body)
+                for flag in ('search', 'expert', 'new_session'):
+                    if flag in body and type(body[flag]) is not bool:
+                        raise APIError(400, f'{flag} must be a boolean.')
+                if 'system_prompt' in body:
+                    if not isinstance(body['system_prompt'], str) or len(body['system_prompt']) > 32000:
+                        raise APIError(400, 'Invalid system_prompt.')
+                run = state.start_run(conversation_id)
+                self._stream_chat(run, body)
+            elif path == '/api/approve':
+                request_id = self._string(body, 'id')
+                if type(body.get('approved')) is not bool:
+                    raise APIError(400, 'approved must be a boolean.')
+                state.approve(request_id, body['approved'])
+                self._json(200, {'ok': True})
+            elif path == '/api/stop':
+                stopped = state.stop_run(self._string(body, 'conversation_id'))
+                self._json(200, {'ok': True, 'stopped': stopped})
+            elif path == '/api/workspace':
+                cwd = state.set_workspace(body.get('path'))
+                self._json(200, {'ok': True, 'cwd': cwd})
+            elif path == '/api/workspace/pick':
+                state.pick_workspace()
+                self._json(202, {'ok': True, 'selecting_workspace': True})
+            else:
+                state.authenticate()
+                self._json(202, {'ok': True, 'authenticating': True})
+        except APIError as exc:
+            self._json(exc.status, {'error': exc.message})
+        except (BrokenPipeError, ConnectionError, TimeoutError):
+            pass
+
+    def _stream_chat(self, run, body):
+        state = self.server.state
+
+        def emit(event):
+            client.check_cancelled(run.stop)
+            self.wfile.write((json.dumps(event, ensure_ascii=False) + '\n').encode('utf-8'))
+            self.wfile.flush()
+
+        def final_event(event):
+            self.wfile.write((json.dumps(event, ensure_ascii=False) + '\n').encode('utf-8'))
+            self.wfile.flush()
+
+        try:
+            self._headers(200, 'application/x-ndjson; charset=utf-8')
+            try:
+                state.chat(run, body, emit)
+            except client.ChatCancelled:
+                final_event({'type': 'status', 'content': 'Запрос остановлен.'})
+            except client.ChatError as exc:
+                final_event({'type': 'error', 'content': str(exc)})
+            except (BrokenPipeError, ConnectionError, TimeoutError):
+                run.stop.set()
+                return
+            except Exception:
+                final_event({'type': 'error', 'content': 'Внутренняя ошибка запроса. Повторите попытку.'})
+            final_event({'type': 'done'})
+        except (BrokenPipeError, ConnectionError, TimeoutError):
+            run.stop.set()
+        finally:
+            state.finish_run(run)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port', type=int, default=8765)
+    args = parser.parse_args()
+    with LocalHTTPServer(('127.0.0.1', args.port)) as server:
+        print(f'DeepSeek: http://127.0.0.1:{server.server_port}')
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+
+
+if __name__ == '__main__':
+    main()

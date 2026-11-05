@@ -1,109 +1,233 @@
 <!doctype html>
-<html lang="ru" data-theme="light">
+<html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#eff0f4">
-  <title>Orbit — DeepSeek workspace</title>
+  <meta name="theme-color" content="#f7f6f2">
+  <title>Orbit</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
+  <script src="/theme.js"></script>
   <script src="/vendor/marked.min.js" defer></script>
   <script src="/vendor/purify.min.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/git.js" defer></script>
 </head>
 <body>
-  <svg class="svg-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <defs>
-      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
-      <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 18v3m6-3v3M9 18h6m-6-3h6m-7.5-3A6 6 0 1 1 16.5 12c-1.4 1-1.5 1.6-1.5 3H9c0-1.4-.1-2-1.5-3ZM12 1v1M3 4l1 1m16-1-1 1M1 11h2m18 0h2"/></symbol>
-      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
-      <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5"/></symbol>
-      <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
-      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></symbol>
-      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></symbol>
-      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
-      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
-      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
-      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="3"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
-      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
-      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
-      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
-      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" stroke="none"/></symbol>
-      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/></symbol>
-      <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
-      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/></symbol>
-      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
-      <symbol id="i-flower"viewBox="0 0 40 40"><path d="M20 11C10-5-5 10 11 20-5 30 10 45 20 29c10 16 25 1 9-9C45 10 30-5 20 11Z" fill="currentColor" stroke="none"/></symbol>
-    </defs>
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14m-6-6 6 6 6-6"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 7V4.5h4V7M6.5 7l.8 12.5h9.4L17.5 7"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 3v2H6v-2l4-3-1-6Zm3 11v5"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4Zm9-13 4 4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5V6a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5v-10Z"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-9.5 7"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10m4 0h2M4 17h2m4 0h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.5h15v10h-9l-4.5 3.5v-3.5H4.5z"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6.5h12M8 12h12M8 17.5h12M4 6.5h.01M4 12h.01M4 17.5h.01"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4m6 0h8"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5.5a3 3 0 0 0-5.6-1.2A3.2 3.2 0 0 0 4 9.6a3.6 3.6 0 0 0 1 6.6 3.2 3.2 0 0 0 7 1.3V5.5Zm0 0a3 3 0 0 1 5.6-1.2A3.2 3.2 0 0 1 20 9.6a3.6 3.6 0 0 1-1 6.6 3.2 3.2 0 0 1-7 1.3"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.3 3.4 5.2 3.4 8.5s-1.1 6.2-3.4 8.5c-2.3-2.3-3.4-5.2-3.4-8.5s1.1-6.2 3.4-8.5Z"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m19 11.5-7.4 7.4a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.1-2.1l7-7"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10m0-5.5-8 8M18 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1H10"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 5v4.5H15M4.5 19v-4.5H9M18.8 9.5A7.5 7.5 0 0 0 5.6 7.8M5.2 14.5a7.5 7.5 0 0 0 13.2 1.7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4.5 9.5 9 5M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19.5h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 19.5h14"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5l-5-5Zm0 0v5h5"/></symbol>
+    <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="10" rx="1.2"/><path d="M3 19h18"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7.5 18.5h10a4 4 0 0 0 .6-8 6 6 0 0 0-11.5 1.6 3.2 3.2 0 0 0 .9 6.4Z"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M4 8.5h16v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-10Zm-.5-4h17v4h-17zM10 12.5h4"/></symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24"><circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="14" r="2"/><path d="M6.5 7.5v9M6.5 7.5c0 4 3.5 6.5 9 6.5"/></symbol>
+    <symbol id="i-hide" viewBox="0 0 24 24"><path d="M4 4l16 16M10.6 6.1A9.6 9.6 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.8 3.4M6.5 7.6C4 9.3 2.5 12 2.5 12S6 18 12 18c1.6 0 3-.4 4.3-1M9.9 10a2.8 2.8 0 0 0 4 4"/></symbol>
+    <symbol id="i-orbit" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9.5" ry="4.2" transform="rotate(-35 12 12)"/><ellipse cx="12" cy="12" rx="9.5" ry="4.2" transform="rotate(35 12 12)"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/></symbol>
   </svg>
 
-  <div class="app-shell">
-    <div class="sidebar-scrim" id="sidebar-scrim"></div>
-    <aside class="sidebar" id="sidebar" aria-label="Диалоги">
-      <a href="/" class="brand" aria-label="Orbit — главная"><svg class="brand-mark"><use href="#i-flower"/></svg><span>orbit<span class="brand-period">.</span></span></a>
-      <button class="new-chat" id="new-chat"><svg class="icon"><use href="#i-plus"/></svg><span>Новый диалог</span><kbd>Ctrl N</kbd></button>
-      <div class="history-label"><span>Диалоги</span><span id="history-count">0</span></div>
-      <nav class="history" id="history" aria-label="История диалогов"></nav>
-      <div class="sidebar-bottom">
-        <button class="local-card" id="workspace-button" title="Сменить рабочую папку"><span class="local-icon"><svg class="icon"><use href="#i-folder"/></svg></span><span class="workspace-text"><span id="workspace-name">Выбрать папку</span><span id="workspace-path-label"></span></span><svg class="icon workspace-chevron"><use href="#i-chevron"/></svg></button>
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="Навигация">
+      <div class="sidebar-head">
+        <a class="brand" href="#/" aria-label="Orbit"><svg class="icon"><use href="#i-orbit"/></svg>orbit</a>
       </div>
+      <button class="new-chat" id="new-chat" type="button" title="Новый диалог (Ctrl+N)"><svg class="icon"><use href="#i-plus"/></svg>Новый диалог</button>
+      <nav class="nav" aria-label="Разделы">
+        <a class="nav-link" href="#/history" data-view="history"><svg class="icon"><use href="#i-list"/></svg><span>Диалоги</span></a>
+        <a class="nav-link" href="#/git" data-view="git"><svg class="icon"><use href="#i-branch"/></svg><span>Git</span><span class="nav-meta" id="nav-branch"></span></a>
+        <a class="nav-link" href="#/settings" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg><span>Настройки</span></a>
+      </nav>
+      <nav class="recent" id="recent" aria-label="Недавние диалоги"></nav>
+      <button class="workspace" id="workspace-button" type="button" title="Сменить рабочую папку">
+        <svg class="icon"><use href="#i-folder"/></svg>
+        <span class="workspace-text"><span class="workspace-name" id="workspace-name">Рабочая папка</span><span class="workspace-path" id="workspace-path-label"></span></span>
+      </button>
     </aside>
+    <div class="scrim" id="scrim"></div>
 
-    <main class="main">
+    <div class="main">
       <header class="topbar">
-        <div class="topbar-heading"><button class="icon-button mobile-menu" id="menu-button" aria-label="Открыть диалоги"><svg class="icon"><use href="#i-menu"/></svg></button><h1 id="chat-title">Новый диалог</h1></div>
-        <div class="topbar-actions"><span class="context-usage" id="context-usage" title="Сколько токенов DeepSeek держит в контексте этого чата" hidden></span><a class="icon-button" id="remote-link" href="https://chat.deepseek.com/" target="_blank" rel="noopener noreferrer" title="Открыть этот чат на chat.deepseek.com" aria-label="Открыть этот чат на chat.deepseek.com" hidden><svg class="icon"><use href="#i-external"/></svg></a><button class="connection" id="connection" type="button"><span class="status-dot"></span><span id="connection-text">Подключение…</span></button><span class="action-divider"></span><button class="icon-button" id="theme-button" aria-label="Переключить тему" title="Переключить тему"><svg class="icon"><use href="#i-moon"/></svg></button><button class="icon-button" id="settings-button" aria-label="Настройки" title="Настройки"><svg class="icon"><use href="#i-settings"/></svg></button></div>
+        <button class="icon-button mobile-only" id="menu-button" type="button" aria-label="Меню" aria-controls="sidebar" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
+        <h1 class="topbar-title" id="topbar-title">Новый диалог</h1>
+        <div class="topbar-actions">
+          <span class="tokens" id="context-usage" title="Сколько токенов DeepSeek держит в контексте этого диалога" hidden></span>
+          <a class="icon-button" id="remote-link" href="https://chat.deepseek.com/" target="_blank" rel="noopener noreferrer" title="Открыть этот диалог на chat.deepseek.com" aria-label="Открыть на chat.deepseek.com" hidden><svg class="icon"><use href="#i-external"/></svg></a>
+          <a class="status-link" id="connection" href="#/settings" hidden></a>
+          <button class="icon-button" id="theme-button" type="button" aria-label="Сменить тему" title="Сменить тему"><svg class="icon"><use href="#i-moon"/></svg></button>
+        </div>
       </header>
 
-      <div class="conversation-scroll" id="conversation-scroll">
-        <section class="welcome" id="welcome" aria-label="Добро пожаловать">
-          <div class="welcome-symbol"><svg><use href="#i-flower"/></svg></div>
-          <h2>Над чем работаем?</h2>
-          <div class="welcome-path" id="welcome-path"></div>
-          <div class="suggestions">
-            <button class="suggestion-chip" data-prompt="Расскажи, что это за проект и как он устроен.">Расскажи о проекте</button>
-            <button class="suggestion-chip" data-prompt="Запусти тесты и разбери, что падает.">Запусти тесты</button>
-            <button class="suggestion-chip" data-prompt="Покажи, что изменено в git и не закоммичено.">Что изменено в git?</button>
+      <section class="view view-chat is-empty" id="view-chat" aria-label="Диалог">
+        <div class="chat-scroll" id="chat-scroll">
+          <div class="messages" id="messages" aria-live="polite" aria-relevant="additions"></div>
+        </div>
+        <div class="dock">
+          <button class="dock-path" id="dock-path" type="button" title="Сменить рабочую папку"></button>
+          <div class="run-status" id="run-status" hidden><span class="spinner"></span><span id="run-status-text"></span><span class="run-timer" id="run-timer"></span><button class="text-button" id="jump-bottom" type="button" hidden>К концу ↓</button></div>
+          <form class="composer" id="composer">
+            <div class="attachments" id="attachments" hidden></div>
+            <label class="sr-only" for="prompt">Сообщение</label>
+            <textarea id="prompt" rows="1" placeholder="Сообщение DeepSeek" maxlength="60000"></textarea>
+            <div class="composer-bar">
+              <button class="icon-button" id="attach-button" type="button" title="Прикрепить текстовый файл" aria-label="Прикрепить файл"><svg class="icon"><use href="#i-clip"/></svg></button>
+              <button class="toggle" id="think-toggle" type="button" aria-pressed="true" title="Режим размышлений DeepThink"><svg class="icon"><use href="#i-brain"/></svg>Размышления</button>
+              <button class="toggle" id="search-toggle" type="button" aria-pressed="false" title="Искать в интернете"><svg class="icon"><use href="#i-globe"/></svg>Поиск</button>
+              <button class="send" id="send-button" type="submit" aria-label="Отправить" disabled><svg class="icon"><use href="#i-arrow-up"/></svg></button>
+            </div>
+          </form>
+          <div class="suggestions" id="suggestions">
+            <button type="button" data-prompt="Расскажи, что это за проект и как он устроен.">Разобрать проект</button>
+            <button type="button" data-prompt="Запусти тесты и разбери, что падает.">Запустить тесты</button>
+            <button type="button" data-prompt="Покажи, что изменено в git и не закоммичено.">Что изменено в git</button>
           </div>
-        </section>
-        <section class="messages" id="messages" aria-label="Сообщения" aria-live="polite" aria-relevant="additions"></section>
-      </div>
+          <input type="file" id="file-input" multiple hidden>
+        </div>
+      </section>
 
-      <div class="composer-dock">
-        <div class="run-status" id="run-status" hidden><span class="activity-indicator"></span><span id="run-status-text">Готовлюсь к ответу…</span><span id="run-timer"></span><button id="jump-bottom" class="text-button" type="button">К ответу ↓</button></div>
-        <form class="composer" id="composer">
-          <label class="sr-only" for="prompt">Сообщение DeepSeek</label>
-          <textarea id="prompt" rows="1" placeholder="Сообщение DeepSeek…" maxlength="60000"></textarea>
-          <div class="composer-bottom">
-            <div class="composer-options"><button type="button" class="option-chip" id="deepthink-button" aria-pressed="true" title="Режим размышлений DeepSeek (DeepThink)"><svg class="icon"><use href="#i-brain"/></svg><span>Размышления</span></button><button type="button" class="option-chip" id="search-button" aria-pressed="false" title="Искать информацию в интернете"><svg class="icon"><use href="#i-globe"/></svg><span>Поиск в сети</span></button></div>
-            <button class="send-button" id="send-button" type="submit" aria-label="Отправить сообщение" disabled><svg class="icon"><use href="#i-arrow"/></svg></button>
+      <section class="view page" id="view-history" aria-label="Диалоги" hidden>
+        <div class="page-head">
+          <div class="page-actions">
+            <button class="button" id="import-button" type="button"><svg class="icon"><use href="#i-upload"/></svg>Импорт</button>
+            <button class="button" id="export-button" type="button"><svg class="icon"><use href="#i-download"/></svg>Экспорт</button>
           </div>
-        </form>
-      </div>
-    </main>
+        </div>
+        <div class="history-tools">
+          <label class="search"><svg class="icon"><use href="#i-search"/></svg><input id="history-search" type="search" placeholder="Поиск по диалогам" autocomplete="off" aria-label="Поиск по диалогам"></label>
+          <div class="segmented" id="history-filter" role="radiogroup" aria-label="Фильтр">
+            <button type="button" role="radio" data-filter="all" aria-checked="true">Все</button>
+            <button type="button" role="radio" data-filter="pinned" aria-checked="false">Закреплённые</button>
+          </div>
+        </div>
+        <div class="history-list" id="history-list"></div>
+        <input type="file" id="import-input" accept="application/json,.json" hidden>
+      </section>
+
+      <section class="view page page-narrow" id="view-settings" aria-label="Настройки" hidden>
+
+        <div class="settings-group">
+          <h3>DeepSeek</h3>
+          <div class="row">
+            <div class="row-text"><span class="row-title" id="auth-title">Проверка…</span><span class="row-hint" id="auth-hint"></span></div>
+            <button class="button" id="auth-button" type="button">Войти</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3><label for="system-prompt">Стартовый промпт</label></h3>
+          <textarea class="field" id="system-prompt" rows="8" spellcheck="false" maxlength="16000"></textarea>
+          <div class="row-under"><span class="row-hint" id="prompt-state">Для новых диалогов. ОС, оболочка и папка добавляются сами.</span><button class="text-button" id="reset-prompt" type="button" hidden>Вернуть исходный</button></div>
+        </div>
+
+        <div class="settings-group">
+          <h3>Команды</h3>
+          <div class="row">
+            <div class="row-text"><span class="row-title">Выполнять без подтверждения</span><span class="row-hint">Каждые 25 команд подряд Orbit всё равно спросит.</span></div>
+            <button class="switch" id="auto-approve-switch" type="button" role="switch" aria-checked="false" aria-label="Выполнять без подтверждения"></button>
+          </div>
+          <div class="row">
+            <div class="row-text"><span class="row-title">Вывод команды</span></div>
+            <div class="segmented" id="output-mode" role="radiogroup" aria-label="Вывод команды">
+              <button type="button" role="radio" data-mode="compact" aria-checked="true">Строка</button>
+              <button type="button" role="radio" data-mode="tail" aria-checked="false">5 строк</button>
+              <button type="button" role="radio" data-mode="full" aria-checked="false">Весь</button>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-text"><span class="row-title">Раскрывать размышления</span></div>
+            <button class="switch" id="thinking-switch" type="button" role="switch" aria-checked="false" aria-label="Раскрывать размышления"></button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>Тема</h3>
+          <div class="segmented" id="theme-choice" role="radiogroup" aria-label="Тема">
+            <button type="button" role="radio" data-theme-choice="light" aria-checked="false">Светлая</button>
+            <button type="button" role="radio" data-theme-choice="dark" aria-checked="false">Тёмная</button>
+            <button type="button" role="radio" data-theme-choice="system" aria-checked="false">Как в системе</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>Данные</h3>
+          <p class="row-hint">Диалоги хранятся в этом браузере. Удаление здесь не трогает чаты на сайте DeepSeek.</p>
+          <div class="button-row">
+            <button class="button" id="settings-export" type="button"><svg class="icon"><use href="#i-download"/></svg>Экспорт</button>
+            <button class="button" id="settings-import" type="button"><svg class="icon"><use href="#i-upload"/></svg>Импорт</button>
+            <button class="button danger" id="clear-history" type="button"><svg class="icon"><use href="#i-trash"/></svg>Удалить все диалоги</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view page page-wide" id="view-git" aria-label="Git" hidden></section>
+    </div>
   </div>
 
-  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
-    <div class="dialog-header"><span class="dialog-icon"><svg class="icon"><use href="#i-settings"/></svg></span><button class="icon-button" id="close-settings" aria-label="Закрыть настройки"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <h2 id="settings-title">Настройки</h2>
-    <div class="settings-section"><h3>Подключение к DeepSeek</h3><div class="auth-status"><span class="status-dot"></span><span id="auth-description">Проверка конфигурации…</span></div><p class="field-hint">Для входа откроется Chrome. Войдите в DeepSeek и отправьте там одно сообщение, чтобы сохранить сессию.</p><button class="tonal-button" id="auth-button"><svg class="icon"><use href="#i-globe"/></svg><span>Обновить авторизацию</span></button></div>
-    <div class="settings-section"><h3>Стартовый промпт</h3><p class="field-hint">Для новых диалогов. ОС, оболочка и рабочая папка добавляются автоматически.</p><label class="sr-only" for="system-prompt">Стартовый промпт</label><textarea id="system-prompt" rows="7" spellcheck="false" maxlength="16000"></textarea><button class="text-button" id="reset-prompt">Вернуть по умолчанию</button></div>
-    <div class="settings-section settings-preferences"><div><h3>Автоапрув команд</h3><p class="field-hint">Все команды DeepSeek выполняются сразу, без карточки с подтверждением. Включайте только для папок, где это безопасно.</p></div><button class="switch" id="auto-approve-switch" role="switch" aria-checked="false" aria-label="Автоапрув команд"><span></span></button></div>
-    <div class="settings-section"><h3>Вывод команд</h3><p class="field-hint">«Компактно» — одна строка с командой, временем и кодом завершения, вывод раскрывается по нажатию. «5 строк» — последние строки вывода.</p><div class="segmented" id="output-mode" role="radiogroup" aria-label="Вывод команд"><button type="button" role="radio" data-mode="compact" aria-checked="true">Компактно</button><button type="button" role="radio" data-mode="tail" aria-checked="false">5 строк</button><button type="button" role="radio" data-mode="full" aria-checked="false">Полностью</button></div></div>
-    <div class="settings-section settings-preferences"><div><h3>Раскрывать размышления</h3></div><button class="switch" id="thinking-switch" role="switch" aria-checked="false" aria-label="Раскрывать размышления"><span></span></button></div>
-    <div class="settings-section"><h3>История на этом устройстве</h3><p class="field-hint">Диалоги хранятся в браузере, авторизация — только на локальном сервере. Очистка не удаляет чаты на стороне DeepSeek.</p><div class="settings-data-actions"><button class="tonal-button" id="export-button"><svg class="icon"><use href="#i-download"/></svg>Экспорт</button><button class="text-button danger-text" id="clear-history"><svg class="icon"><use href="#i-trash"/></svg>Очистить историю</button></div></div>
-    <div class="dialog-footer"><button class="primary-button" id="save-settings">Готово</button></div>
+  <dialog class="dialog" id="workspace-dialog" aria-labelledby="workspace-title">
+    <form id="workspace-form" method="dialog">
+      <h2 id="workspace-title">Рабочая папка</h2>
+      <p class="dialog-text">Здесь DeepSeek выполняет команды, а Git показывает изменения.</p>
+      <label class="sr-only" for="workspace-path">Путь к папке</label>
+      <input class="field mono" id="workspace-path" type="text" placeholder="C:\Projects\my-project" autocomplete="off" spellcheck="false" required>
+      <div class="recent-folders" id="recent-folders"></div>
+      <p class="form-error" id="workspace-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button" id="pick-workspace" type="button"><svg class="icon"><use href="#i-folder"/></svg>Обзор…</button>
+        <span class="spacer"></span>
+        <button class="button" type="button" data-close>Отмена</button>
+        <button class="button primary" id="apply-workspace" type="submit">Открыть</button>
+      </div>
+    </form>
   </dialog>
-  <dialog id="workspace-dialog" class="settings-dialog workspace-dialog" aria-labelledby="workspace-title">
-    <div class="dialog-header"><span class="dialog-icon"><svg class="icon"><use href="#i-folder"/></svg></span><button class="icon-button" id="close-workspace" aria-label="Закрыть"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <h2 id="workspace-title">Рабочая папка</h2>
-    <p class="field-hint">В этой папке DeepSeek будет выполнять разрешённые команды.</p>
-    <form id="workspace-form"><label class="sr-only" for="workspace-path">Путь к папке</label><input id="workspace-path" type="text" placeholder="C:\Projects\my-project" autocomplete="off" spellcheck="false" required><div class="workspace-actions"><button type="button" class="tonal-button" id="pick-workspace"><svg class="icon"><use href="#i-folder"/></svg>Обзор…</button><button type="submit" class="primary-button" id="apply-workspace">Выбрать</button></div></form>
-    <p id="workspace-error" class="workspace-error" role="status" hidden></p>
+
+  <dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title"></h2>
+    <div class="dialog-text" id="confirm-text"></div>
+    <div class="dialog-actions"><span class="spacer"></span><button class="button" type="button" data-close>Отмена</button><button class="button primary" id="confirm-ok" type="button">Да</button></div>
   </dialog>
+
+  <dialog class="dialog" id="prompt-dialog" aria-labelledby="prompt-dialog-title">
+    <form id="prompt-dialog-form" method="dialog">
+      <h2 id="prompt-dialog-title"></h2>
+      <input class="field" id="prompt-dialog-input" type="text" maxlength="200" autocomplete="off" required>
+      <div class="dialog-actions"><span class="spacer"></span><button class="button" type="button" data-close>Отмена</button><button class="button primary" type="submit">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog dialog-wide" id="context-dialog" aria-labelledby="context-title">
+    <div class="dialog-head"><h2 id="context-title">Что ушло в DeepSeek</h2><button class="icon-button" type="button" data-close aria-label="Закрыть"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <pre class="context-text" id="context-text"></pre>
+  </dialog>
+
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

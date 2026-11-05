@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 import uuid
 
 import deepseek_client as client
+import git_tools
 
 MAX_BODY = 768 * 1024
 MAX_CONVERSATIONS = 256
@@ -38,9 +39,35 @@ WEB_ROOT = Path(__file__).resolve().parent / 'web'
 
 
 class APIError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, output=''):
         self.status = status
         self.message = message
+        self.output = output
+
+
+# Git endpoints: path -> (handler taking (cwd, body), changes the repository).
+GIT_ROUTES = {
+    '/api/git/diff': (lambda cwd, body: git_tools.diff(cwd, body.get('path')), False),
+    '/api/git/show': (lambda cwd, body: git_tools.show(cwd, body.get('hash')), False),
+    '/api/git/commit': (lambda cwd, body: git_tools.commit(cwd, body.get('paths'), body.get('subject'),
+                                                           body.get('body', '')), True),
+    '/api/git/discard': (lambda cwd, body: git_tools.discard(cwd, body.get('paths')), True),
+    '/api/git/undo': (lambda cwd, body: git_tools.undo_commit(cwd), True),
+    '/api/git/ignore': (lambda cwd, body: git_tools.ignore(cwd, body.get('path')), True),
+    '/api/git/revert': (lambda cwd, body: git_tools.revert(cwd, body.get('hash')), True),
+    '/api/git/abort': (lambda cwd, body: git_tools.abort(cwd), True),
+    '/api/git/stash': (lambda cwd, body: git_tools.stash(cwd), True),
+    '/api/git/unstash': (lambda cwd, body: git_tools.unstash(cwd), True),
+    '/api/git/pull': (lambda cwd, body: git_tools.pull(cwd), True),
+    '/api/git/push': (lambda cwd, body: git_tools.push(cwd), True),
+    '/api/git/fetch': (lambda cwd, body: git_tools.fetch(cwd, quiet=body.get('quiet') is True), True),
+    '/api/git/switch': (lambda cwd, body: git_tools.switch(cwd, body.get('branch'), body.get('create') is True), True),
+    '/api/git/merge': (lambda cwd, body: git_tools.merge(cwd, body.get('branch')), True),
+    '/api/git/delete-branch': (lambda cwd, body: git_tools.delete_branch(cwd, body.get('branch')), True),
+    '/api/git/init': (lambda cwd, body: git_tools.init(cwd), True),
+    '/api/git/remote': (lambda cwd, body: git_tools.set_remote(cwd, body.get('url')), True),
+}
+GIT_MESSAGE_RUN = 'git-message'
 
 
 class PendingApproval:
@@ -84,6 +111,10 @@ class AppState:
         self.auth_error = ''
         self.selecting_workspace = False
         self.workspace_error = ''
+        self.git_busy = False
+
+    def _blocked(self):
+        return self.active is not None or self.authenticating or self.selecting_workspace or self.git_busy
 
     def status(self):
         try:
@@ -91,19 +122,20 @@ class AppState:
             configured = True
         except client.AuthenticationError:
             configured = False
+        branch = git_tools.current_branch(os.getcwd())
         with self.lock:
             return {
-                'configured': configured, 'cwd': os.getcwd(), 'platform': sys.platform,
+                'configured': configured, 'cwd': os.getcwd(), 'platform': sys.platform, 'branch': branch,
                 'system_prompt': client.SYSTEM_INIT_PROMPT, 'busy': self.active is not None,
                 'authenticating': self.authenticating, 'auth_error': self.auth_error,
                 'selecting_workspace': self.selecting_workspace, 'workspace_error': self.workspace_error,
             }
 
-    def start_run(self, conversation_id):
+    def start_run(self, conversation_id, register=True):
         with self.lock:
-            if self.active is not None or self.authenticating or self.selecting_workspace:
-                raise APIError(409, 'Запрос, авторизация или выбор рабочей папки уже выполняется.')
-            if conversation_id not in self.conversations:
+            if self._blocked():
+                raise APIError(409, 'Запрос, авторизация, выбор папки или операция Git уже выполняется.')
+            if register and conversation_id not in self.conversations:
                 if len(self.conversations) >= MAX_CONVERSATIONS:
                     raise APIError(409, 'Достигнут предел диалогов. Перезапустите сервер.')
                 self.conversations[conversation_id] = {'parent': None, 'started': False, 'session': None, 'note': ''}
@@ -144,8 +176,8 @@ class AppState:
 
     def authenticate(self):
         with self.lock:
-            if self.active is not None or self.authenticating or self.selecting_workspace:
-                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            if self._blocked():
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации, выбора папки или операции Git.')
             self.authenticating = True
             self.auth_error = ''
 
@@ -183,8 +215,8 @@ class AppState:
 
     def set_workspace(self, path):
         with self.lock:
-            if self.active is not None or self.authenticating or self.selecting_workspace:
-                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            if self._blocked():
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации, выбора папки или операции Git.')
             try:
                 cwd = self._change_workspace(path)
             except APIError as exc:
@@ -195,8 +227,8 @@ class AppState:
 
     def pick_workspace(self):
         with self.lock:
-            if self.active is not None or self.authenticating or self.selecting_workspace:
-                raise APIError(409, 'Дождитесь завершения запроса, авторизации или выбора рабочей папки.')
+            if self._blocked():
+                raise APIError(409, 'Дождитесь завершения запроса, авторизации, выбора папки или операции Git.')
             self.selecting_workspace = True
             self.workspace_error = ''
 
@@ -225,6 +257,50 @@ class AppState:
                 self.selecting_workspace = False
                 self.workspace_error = 'Не удалось открыть окно выбора папки. Введите путь вручную.'
                 raise APIError(503, self.workspace_error) from None
+
+    def git(self, path, body):
+        handler, writes = GIT_ROUTES[path]
+        if writes:
+            with self.lock:
+                if self.active is not None:
+                    raise APIError(409, 'Дождитесь, пока DeepSeek закончит ответ: он может работать с этой папкой.')
+                if self.git_busy or self.authenticating or self.selecting_workspace:
+                    raise APIError(409, 'Дождитесь завершения текущей операции.')
+                self.git_busy = True
+        try:
+            return handler(os.getcwd(), body)
+        except git_tools.GitError as exc:
+            raise APIError(400, exc.message, exc.output[-20000:]) from None
+        finally:
+            if writes:
+                with self.lock:
+                    self.git_busy = False
+
+    def git_read(self, kind):
+        try:
+            return git_tools.status(os.getcwd()) if kind == 'status' else git_tools.log(os.getcwd())
+        except git_tools.GitError as exc:
+            raise APIError(400, exc.message, exc.output[-20000:]) from None
+
+    def git_message(self, run, body):
+        try:
+            context = git_tools.message_context(os.getcwd(), body.get('paths'))
+        except git_tools.GitError as exc:
+            raise APIError(400, exc.message) from None
+        config = client.load_config(auto_auth=False)
+        # A separate chat on the site, so commit messages do not mix with the user's dialogs.
+        session = client.create_chat_session(config, stop_event=run.stop)
+        result = client.send_chat_completion(
+            dict(config, chat_session_id=session), git_tools.commit_message_prompt(context, body.get('draft', '')),
+            None, search_enabled=False, thinking_enabled=False, sse_callback=lambda event: None, stop_event=run.stop,
+        )
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise client.ChatError('DeepSeek не вернул ответ.')
+        try:
+            subject, message_body = git_tools.parse_commit_message(result[1])
+        except git_tools.GitError as exc:
+            raise client.ChatError(exc.message) from None
+        return {'subject': subject, 'body': message_body}
 
     def chat(self, run, body, emit):
         config = client.load_config(auto_auth=False)
@@ -445,14 +521,19 @@ class Handler(BaseHTTPRequestHandler):
             path = self._path()
             if path == '/api/status':
                 self._json(200, self.server.state.status())
+            elif path in ('/api/git/status', '/api/git/log'):
+                self._json(200, self.server.state.git_read(path.rsplit('/', 1)[1]))
             elif path.startswith('/api/'):
                 raise APIError(404, 'Unknown API endpoint.')
             else:
                 self._static(path)
         except APIError as exc:
-            self._json(exc.status, {'error': exc.message})
+            self._error(exc)
         except (BrokenPipeError, ConnectionError, TimeoutError):
             pass
+
+    def _error(self, exc):
+        self._json(exc.status, {'error': exc.message, **({'output': exc.output} if exc.output else {})})
 
     def _static(self, path):
         path = unquote(path)
@@ -474,12 +555,28 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._guard()
             path = self._path()
-            if path not in ('/api/chat', '/api/approve', '/api/stop', '/api/auth',
-                            '/api/workspace', '/api/workspace/pick'):
+            if path not in ('/api/chat', '/api/approve', '/api/stop', '/api/auth', '/api/workspace',
+                            '/api/workspace/pick', '/api/git/message') and path not in GIT_ROUTES:
                 raise APIError(404, 'Unknown API endpoint.')
-            body = self._body(allow_empty=path == '/api/auth')
+            body = self._body(allow_empty=path == '/api/auth' or path in GIT_ROUTES)
             state = self.server.state
-            if path == '/api/chat':
+            if path in GIT_ROUTES:
+                self._git_body(body)
+                self._json(200, {'ok': True, **state.git(path, body)})
+            elif path == '/api/git/message':
+                self._git_body(body)
+                if 'draft' in body and (not isinstance(body['draft'], str) or len(body['draft']) > 8000):
+                    raise APIError(400, 'Invalid draft.')
+                run = state.start_run(GIT_MESSAGE_RUN, register=False)
+                try:
+                    self._json(200, {'ok': True, **state.git_message(run, body)})
+                except client.ChatCancelled:
+                    raise APIError(409, 'Подготовка сообщения остановлена.') from None
+                except client.ChatError as exc:
+                    raise APIError(502, str(exc)) from None
+                finally:
+                    state.finish_run(run)
+            elif path == '/api/chat':
                 conversation_id = self._string(body, 'conversation_id')
                 self._string(body, 'message', 64000)
                 self._history(body)
@@ -510,9 +607,21 @@ class Handler(BaseHTTPRequestHandler):
                 state.authenticate()
                 self._json(202, {'ok': True, 'authenticating': True})
         except APIError as exc:
-            self._json(exc.status, {'error': exc.message})
+            self._error(exc)
         except (BrokenPipeError, ConnectionError, TimeoutError):
             pass
+
+    @staticmethod
+    def _git_body(body):
+        paths = body.get('paths')
+        if paths is not None and (not isinstance(paths, list) or len(paths) > git_tools.MAX_FILES or not all(
+                isinstance(path, str) and 0 < len(path) <= 4096 and '\x00' not in path for path in paths)):
+            raise APIError(400, 'paths must be a list of file paths.')
+        for field, limit in (('path', 4096), ('hash', 64), ('branch', 250), ('url', 1000),
+                             ('subject', 500), ('body', 8000)):
+            value = body.get(field)
+            if value is not None and (not isinstance(value, str) or len(value) > limit or '\x00' in value):
+                raise APIError(400, f'Invalid {field}.')
 
     def _stream_chat(self, run, body):
         state = self.server.state

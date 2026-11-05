@@ -106,10 +106,10 @@ def load_config(auto_auth=True):
         with open(CONFIG_FILE, encoding='utf-8') as handle:
             config = json.load(handle)
     except (OSError, ValueError):
-        raise AuthenticationError('Конфигурация отсутствует или повреждена. Нажмите «Авторизация».') from None
+        raise AuthenticationError('Конфигурация отсутствует или повреждена. Войдите в DeepSeek в настройках.') from None
     if not isinstance(config, dict) or not all(isinstance(config.get(key), str) and config[key].strip()
                                                for key in ('authorization', 'chat_session_id')):
-        raise AuthenticationError('В конфигурации нет авторизации или сессии. Нажмите «Авторизация».')
+        raise AuthenticationError('В конфигурации нет авторизации или сессии. Войдите в DeepSeek в настройках.')
     return config
 
 
@@ -142,7 +142,7 @@ def _check_api_error(data):
         return
     codes = [data.get('code'), data.get('data', {}).get('biz_code') if isinstance(data.get('data'), dict) else None]
     if any(code in (401, 403, 40001, '401', '403', '40001') for code in codes):
-        raise AuthenticationError('Авторизация истекла. Нажмите «Авторизация» для обновления токенов.')
+        raise AuthenticationError('Авторизация истекла. Войдите заново: Настройки → «Войти заново».')
     if data.get('type') == 'error' or any(code not in (None, 0, '0') for code in codes):
         raise ChatError('DeepSeek отклонил запрос. Проверьте авторизацию или повторите позже.')
 
@@ -151,7 +151,7 @@ def _check_http(response):
     if response.status_code == 202:
         raise ChatError('DeepSeek вернул HTTP 202 вместо ответа API. Обновите авторизацию в настройках и повторите запрос.')
     if response.status_code in (401, 403):
-        raise AuthenticationError('Авторизация истекла. Нажмите «Авторизация» для обновления токенов.')
+        raise AuthenticationError('Авторизация истекла. Войдите заново: Настройки → «Войти заново».')
     if response.status_code != 200:
         raise ChatError(f'DeepSeek вернул HTTP {response.status_code}. Повторите запрос позже.')
 
